@@ -747,6 +747,15 @@
     }).format(date);
   }
 
+  // 컴퓨터 시간대와 상관없이 한국 표준시(UTC+9, 서머타임 없음)로 맞춘다.
+  function formatCountChecked(value) {
+    var date = value instanceof Date ? value : new Date(value);
+    if (isNaN(date.getTime())) return "";
+    var seoul = new Date(date.getTime() + 9 * 60 * 60 * 1000);
+    function two(n) { return (n < 10 ? "0" : "") + n; }
+    return seoul.getUTCFullYear() + "-" + two(seoul.getUTCMonth() + 1) + "-" + two(seoul.getUTCDate()) + " " + two(seoul.getUTCHours()) + ":" + two(seoul.getUTCMinutes()) + ":" + two(seoul.getUTCSeconds());
+  }
+
   function safeUrl(url) {
     try {
       var parsed = new URL(url, location.origin);
@@ -1124,11 +1133,13 @@
     if (!keys.length) return;
     var gen = state.countRefreshGen;
     state.countRefreshBusy = true;
+    setCountReloadBusy(true);
     var left = keys.length;
     function finish() {
       left -= 1;
       if (left > 0) return;
       state.countRefreshBusy = false;
+      setCountReloadBusy(false);
       if (gen !== state.countRefreshGen || state.loading) return;
       applyLiveCounts(null);
     }
@@ -1145,6 +1156,46 @@
         .catch(function () {})
         .then(finish, finish);
     });
+  }
+
+  function setCountReloadBusy(busy) {
+    var button = document.getElementById("countReload");
+    if (!button) return;
+    var icon = button.querySelector("i");
+    if (button._spinTimer) {
+      clearTimeout(button._spinTimer);
+      button._spinTimer = 0;
+    }
+    if (icon && button._spinDone) {
+      icon.removeEventListener("animationiteration", button._spinDone);
+      button._spinDone = null;
+    }
+    if (busy) {
+      button.disabled = true;
+      button.setAttribute("aria-busy", "true");
+      if (icon && !reducedMotion) icon.classList.add("is-spin");
+      return;
+    }
+    function release() {
+      button._spinDone = null;
+      if (button._spinTimer) {
+        clearTimeout(button._spinTimer);
+        button._spinTimer = 0;
+      }
+      if (icon) {
+        icon.removeEventListener("animationiteration", release);
+        icon.classList.remove("is-spin");
+      }
+      button.disabled = false;
+      button.setAttribute("aria-busy", "false");
+    }
+    if (!icon || reducedMotion || !icon.classList.contains("is-spin")) {
+      release();
+      return;
+    }
+    button._spinDone = release;
+    icon.addEventListener("animationiteration", release);
+    button._spinTimer = setTimeout(release, 700);
   }
 
   function startCountWatch() {
@@ -1497,11 +1548,105 @@
     return "#9aa6ee";
   }
 
-  function renderChart() {
+  function chartValueHost(wrap) {
+    var host = wrap.querySelector(".chart-values");
+    if (host) return host;
+    host = document.createElement("div");
+    host.className = "chart-values";
+    host.setAttribute("aria-hidden", "true");
+    wrap.appendChild(host);
+    return host;
+  }
+
+  function chartBarValue(bar, scale, finalValue) {
+    if (!finalValue) return 0;
+    var base = scale.getPixelForValue(0);
+    var target = scale.getPixelForValue(finalValue);
+    var span = base - target;
+    if (!span) return finalValue;
+    if (Math.abs(bar.y - target) < 0.6) return finalValue;
+    var raw = ((base - bar.y) / span) * finalValue;
+    if (raw < 0) raw = 0;
+    if (raw > finalValue) raw = finalValue;
+    return Math.round(raw);
+  }
+
+  function showChartCount(el, value) {
+    if (el._chartShown === value && el.querySelector(".odometer")) return;
+    el._chartShown = value;
+    var reel = el.querySelector(".odometer");
+    if (!reel) {
+      reel = document.createElement("span");
+      reel.className = "odometer";
+      el.appendChild(reel);
+    }
+    paintStatic(reel, value);
+  }
+
+  function followChartValues(chart) {
+    if (!chart || !chart.canvas || !chart.scales || !chart.scales.y) return;
+    var host = chart.canvas.parentNode.querySelector(".chart-values");
+    var rows = chart.$chartRows || [];
+    var meta = chart.getDatasetMeta(0);
+    if (!host || !meta || !meta.data) return;
+    var scale = chart.scales.y;
+    rows.forEach(function (row, index) {
+      var el = host.querySelector('[data-chart-value="' + row.id + '"]');
+      var bar = meta.data[index];
+      if (!el || !bar) return;
+      el.style.left = bar.x + "px";
+      el.style.top = bar.y + "px";
+      if (!chart.$rise) return;
+      showChartCount(el, chartBarValue(bar, scale, row.todayVisitors || 0));
+    });
+  }
+
+  function syncChartValues(chart, rows, replay, rise) {
+    var host = chartValueHost(chart.canvas.parentNode);
+    var seen = {};
+    rows.forEach(function (row) {
+      seen[row.id] = true;
+      var el = host.querySelector('[data-chart-value="' + row.id + '"]');
+      if (!el) {
+        el = document.createElement("span");
+        el.className = "chart-value";
+        el.setAttribute("data-chart-value", row.id);
+        host.appendChild(el);
+      }
+      var reel = el.querySelector(".odometer");
+      // 탭을 나갔다가 돌아오면 끝난 릴을 버리고 막대와 함께 0부터 올린다.
+      // 같은 탭에 있는 동안의 새로고침은 지금 숫자에서 이어간다.
+      if (!reel || replay || rise) {
+        var fresh = document.createElement("span");
+        fresh.className = "odometer";
+        if (reel) reel.replaceWith(fresh);
+        else el.appendChild(fresh);
+        reel = fresh;
+      }
+      el._chartShown = null;
+      if (rise) paintStatic(reel, 0);
+      else setOdometer(reel, row.todayVisitors || 0);
+    });
+    Array.prototype.slice.call(host.children).forEach(function (child) {
+      if (!seen[child.getAttribute("data-chart-value")]) child.remove();
+    });
+    chart.$chartRows = rows;
+  }
+
+  var barValuePlugin = {
+    id: "barValues",
+    afterDraw: function (chart) {
+      followChartValues(chart);
+    }
+  };
+
+  function renderChart(options) {
     var wrap = document.getElementById("chartWrap");
     var empty = document.getElementById("chartEmpty");
     var canvas = document.getElementById("visitorChart");
     if (!wrap || !canvas) return;
+    var existed = !!state.chart;
+    var rise = !reducedMotion && (!!(options && options.rise) || !existed);
     if (state.chart) {
       state.chart.destroy();
       state.chart = null;
@@ -1509,6 +1654,8 @@
     var rows = visibleCharacters().filter(function (row) { return row.ok; });
     if (!rows.length || typeof Chart === "undefined") {
       wrap.hidden = true;
+      var stale = wrap.querySelector(".chart-values");
+      if (stale) stale.replaceChildren();
       if (empty) {
         empty.hidden = false;
         empty.textContent = typeof Chart === "undefined" ? "Chart.js를 불러오지 못했습니다." : "그래프를 표시할 캐릭터가 없습니다.";
@@ -1520,6 +1667,7 @@
     try {
       state.chart = new Chart(canvas, {
         type: "bar",
+        plugins: [barValuePlugin],
         data: {
           labels: rows.map(function (row) { return row.name; }),
           datasets: [{
@@ -1533,6 +1681,7 @@
         options: {
           responsive: true,
           maintainAspectRatio: false,
+          animation: { duration: rise ? 1000 : 0 },
           plugins: {
             legend: { display: false },
             tooltip: {
@@ -1546,13 +1695,17 @@
               }
             }
           },
-          layout: { padding: { left: 4, right: 18 } },
+          layout: { padding: { top: 8, left: 4, right: 18 } },
           scales: {
             x: { ticks: { color: "#c3c3cc", maxRotation: 0, minRotation: 0, autoSkip: false, font: { size: 12 } }, grid: { display: false } },
-            y: { beginAtZero: true, ticks: { color: "#9a9aa8", precision: 0 }, grid: { color: "#2c2c3a" } }
+            y: { beginAtZero: true, grace: "22%", ticks: { color: "#9a9aa8", precision: 0 }, grid: { color: "#2c2c3a" } }
           }
         }
       });
+      state.chart.$rise = rise;
+      state.chart.$chartRows = rows;
+      syncChartValues(state.chart, rows, !!(options && options.replay), rise);
+      followChartValues(state.chart);
     } catch (error) {
       wrap.hidden = true;
       if (empty) {
@@ -1702,7 +1855,43 @@
     }
     paintVisitorFigures();
     paintBlogCounts(key);
-    if (!pending) revealDashboard();
+    if (!pending) {
+      markCountChecked();
+      revealDashboard();
+    }
+  }
+
+  function stampChars(el) {
+    var nodes = el.querySelectorAll(".tab-ch");
+    if (!nodes.length) return el.textContent;
+    var text = "";
+    for (var i = 0; i < nodes.length; i++) text += nodes[i].textContent;
+    return text;
+  }
+
+  function paintStamp(el, stamp) {
+    if (stampChars(el) === stamp) return;
+    var frag = document.createDocumentFragment();
+    for (var i = 0; i < stamp.length; i++) {
+      var ch = stamp.charAt(i);
+      var span = document.createElement("span");
+      var kind = "tab-ch";
+      if (ch >= "0" && ch <= "9") kind += " is-digit";
+      else if (ch === " ") kind += " is-gap";
+      span.className = kind;
+      span.textContent = ch;
+      frag.appendChild(span);
+    }
+    el.replaceChildren(frag);
+  }
+
+  function markCountChecked() {
+    var el = document.getElementById("countUpdated");
+    state.countCheckedAt = new Date();
+    if (!el) return;
+    var stamp = formatCountChecked(state.countCheckedAt);
+    el.dateTime = stamp.replace(" ", "T") + "+09:00";
+    paintStamp(el, stamp);
   }
 
   function render(options) {
@@ -2150,13 +2339,15 @@
     var tabs = [document.getElementById("tabCards"), document.getElementById("tabStats")];
     if (!tabs[0] || !tabs[1]) return;
     function select(view) {
-      state.view = view === "stats" ? "stats" : "cards";
+      var next = view === "stats" ? "stats" : "cards";
+      var enteredStats = next === "stats" && state.view !== "stats";
+      state.view = next;
       storageSet(STORAGE.view, state.view);
       // 탭만 바꿀 때 카드를 다시 만들면, 집계가 끝난 숫자가 빈 칸으로 남는다.
       syncView();
       if (state.view === "stats") {
         renderStatsTable();
-        renderChart();
+        renderChart(enteredStats ? { replay: true, rise: true } : null);
       }
     }
     tabs.forEach(function (button, index) {
@@ -2180,6 +2371,8 @@
     bindViewTabs();
     document.getElementById("logoutBtn").addEventListener("click", logoutUser);
     document.getElementById("refreshBtn").addEventListener("click", loadAndRender);
+    var countReload = document.getElementById("countReload");
+    if (countReload) countReload.addEventListener("click", refreshLiveCounts);
     document.getElementById("exportBtn").addEventListener("click", exportData);
     document.getElementById("sortSelect").addEventListener("change", function (event) {
       if (!SORTS[event.target.value]) return;

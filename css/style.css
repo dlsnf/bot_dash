@@ -270,7 +270,86 @@ button, input, select { font: inherit; color: inherit; }
 
 .hint, .footer p, .empty p, .time-note { line-height: 1.5; }
 
-.view-tabs { display: flex; gap: 8px; margin-top: 18px; }
+.view-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.view-tabs { display: flex; gap: 8px; flex: none; }
+
+.tab-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  align-self: flex-end;
+  padding-bottom: 1px;
+  font-size: 12px;
+  line-height: 1;
+  margin-right: 8px;
+}
+
+/* 2026-10-15 14:33:20 은 19자다. 글꼴에 고정폭 숫자가 없어도 칸이 밀리지 않게 한다. */
+.tab-updated {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex: 0 0 19ch;
+  width: 19ch;
+  min-width: 19ch;
+  max-width: 19ch;
+  margin: 0;
+  padding: 0;
+  color: var(--muted);
+  font-size: 1em;
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1, "lnum" 1;
+  white-space: nowrap;
+}
+
+.tab-ch { flex: 0 0 auto; text-align: center; white-space: pre; }
+.tab-ch.is-digit { width: 1ch; }
+.tab-ch.is-gap { width: 0.27em; }
+
+.tab-reload {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 1em;
+  width: 1em;
+  height: 1em;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 1em;
+  line-height: 1;
+  cursor: pointer;
+  transform: translateY(-0.08em);
+}
+
+.tab-reload i {
+  display: block;
+  width: 1em;
+  height: 1em;
+  font-size: 1em;
+  line-height: 1;
+}
+.tab-reload i.is-spin { animation: tab-reload-spin 0.55s linear infinite; }
+.tab-reload:hover { color: var(--fg); }
+.tab-reload:disabled { cursor: default; opacity: 0.55; }
+
+@keyframes tab-reload-spin { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .tab-reload i.is-spin { animation: none; }
+}
 
 .view-tabs button {
   display: inline-flex;
@@ -329,6 +408,16 @@ button, input, select { font: inherit; color: inherit; }
 .chart-head h2 { margin: 0; font-size: 20px; }
 .chart-head p { margin: 0; color: var(--muted); font-size: 13px; max-width: 520px; line-height: 1.45; word-break: keep-all; }
 .chart-wrap { position: relative; height: 280px; margin-top: 8px; }
+.chart-values { position: absolute; inset: 0; pointer-events: none; z-index: 1; }
+.chart-value {
+  position: absolute;
+  transform: translate(-50%, calc(-100% - 6px));
+  color: #ededf3;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+}
 .chart-empty, .stats-empty { color: var(--muted); }
 
 .stats-table-wrap {
@@ -1105,6 +1194,8 @@ body[data-page="login"].auth-ready .login-shell { visibility: visible; }
   .brand h1 { font-size: 18px; }
   .btn-logout, .btn-toggle { min-height: 40px; padding: 0 10px; }
   .card-grid { grid-template-columns: 1fr; }
+  .view-tabs button { padding: 0 12px; }
+  .tab-meta { font-size: 11px; }
   .visitor-blogs.is-single .visitor-num { font-size: 46px; }
   .visitor-blogs:not(.is-single) .visitor-num { font-size: 32px; }
   .chart-card { padding: 14px 12px 8px; }

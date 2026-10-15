@@ -318,7 +318,9 @@ function naver_counts($id) {
         return array(null, null, null, null);
     }
     $today = seoul_today();
-    $postsToday = count_days($body, '/"addDate"\s*:\s*"([^"]+)"/', $today);
+    // 목록의 "5분 전"은 화면 문구라서 빠질 수 있다. RSS 발행 시각이 있으면 그 날짜를 쓴다.
+    $postsToday = naver_rss_today($id, $today);
+    if ($postsToday === null) $postsToday = count_days($body, '/"addDate"\s*:\s*"([^"]+)"/', $today);
     $total = (int) $totalMatch[1];
     if ($total === 0) return array(0, 0, 0, 0);
     // 글이 상한보다 많으면 일부 댓글만 더해 전체인 것처럼 보여 주지 않는다.
@@ -332,10 +334,10 @@ function naver_counts($id) {
     foreach ($logNos as $logNo) {
         $page = "https://m.blog.naver.com/" . rawurlencode($id) . "/" . rawurlencode($logNo);
         list($pageStatus, $html) = fetch_url($page, BLOG_HTML_LIMIT, "naver_host_ok", array(), true, 6, true);
-        if ($pageStatus !== 200 || !preg_match('/commentCount="(\d+)"/', $html, $commentMatch)) {
+        $count = naver_comment_count($html);
+        if ($pageStatus !== 200 || $count === null) {
             return array($total, null, $postsToday, null);
         }
-        $count = (int) $commentMatch[1];
         $sum += $count;
         if ($count === 0) {
             $sawCommentDay = true;
@@ -351,6 +353,87 @@ function naver_counts($id) {
         }
     }
     return array($total, $sum, $postsToday, $sawCommentDay ? $commentsToday : null);
+}
+
+function naver_comment_count($html) {
+    if (preg_match('/commentCount="(\d+)"/', $html, $matched)) return (int) $matched[1];
+    if (preg_match('/\\\\"commentCount\\\\"\s*:\s*(\d+)/', $html, $matched)) return (int) $matched[1];
+    if (preg_match('/"commentCount"\s*:\s*(\d+)/', $html, $matched)) return (int) $matched[1];
+    return null;
+}
+
+function naver_rss_today($id, $today) {
+    $allow = function ($url) use ($id) {
+        if (host_of($url) !== "rss.blog.naver.com") return false;
+        $path = parse_url($url, PHP_URL_PATH);
+        return $path === "/" . $id . ".xml";
+    };
+    list($status, $xml) = fetch_url(
+        "https://rss.blog.naver.com/" . rawurlencode($id) . ".xml",
+        BLOG_HTML_LIMIT,
+        $allow,
+        array(),
+        true,
+        6,
+        true
+    );
+    if ($status !== 200 || $xml === "" || !preg_match_all('#<item\b[^>]*>(.*?)</item>#is', $xml, $items)) {
+        return null;
+    }
+    $count = 0;
+    $known = false;
+    foreach ($items[1] as $item) {
+        if (!preg_match('#<pubDate>\s*([^<]+)\s*</pubDate>#i', $item, $matched)) continue;
+        $day = day_key($matched[1]);
+        if ($day === "") continue;
+        $known = true;
+        if ($day === $today) $count += 1;
+    }
+    return $known ? $count : null;
+}
+
+function tistory_comments($host, $postTotal) {
+    if ($postTotal === 0) return 0;
+    $allow = function ($url) use ($host) {
+        if (host_of($url) !== $host) return false;
+        $path = parse_url($url, PHP_URL_PATH);
+        if (!is_string($path) || ($path !== "" && $path !== "/")) return false;
+        $query = array();
+        $rawQuery = parse_url($url, PHP_URL_QUERY);
+        if (is_string($rawQuery) && $rawQuery !== "") parse_str($rawQuery, $query);
+        if (!$query) return true;
+        return count($query) === 1
+            && isset($query["page"])
+            && preg_match('/^[1-9]\d{0,2}$/', (string) $query["page"]);
+    };
+    $counts = array();
+    for ($page = 1; $page <= 8; $page++) {
+        $url = "https://" . $host . "/" . ($page === 1 ? "" : "?page=" . $page);
+        $browser = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
+        list($status, $html) = fetch_url($url, BLOG_HTML_LIMIT, $allow, array(), true, 6, true, $browser);
+        if ($status !== 200 || $html === "") {
+            if ($page === 1) return null;
+            break;
+        }
+        if (!preg_match_all('/id="commentCount(\d+)_\d+"[^>]*>\s*(\d*)\s*</', $html, $matched, PREG_SET_ORDER)) {
+            if ($page === 1) return null;
+            break;
+        }
+        $added = 0;
+        foreach ($matched as $row) {
+            if (isset($counts[$row[1]])) continue;
+            $counts[$row[1]] = ($row[2] === "") ? 0 : (int) $row[2];
+            $added += 1;
+        }
+        if ($added === 0) break;
+        if (!preg_match('/(?:\?|&|\/)page=' . ($page + 1) . '(?:["&\/\s]|$)/', $html)) break;
+    }
+    if (!$counts) return null;
+    // 글 수보다 적게 보면 합이 전체인 것처럼 보이지 않게 비운다.
+    if (is_int($postTotal) && $postTotal > count($counts)) return null;
+    $sum = 0;
+    foreach ($counts as $count) $sum += $count;
+    return $sum;
 }
 
 function tistory_posts_today($host, $today) {
@@ -440,8 +523,9 @@ if (isset($_GET["view"]) && (string) $_GET["view"] === "counts") {
     $posts = tistory_posts($host);
     $postsToday = tistory_posts_today($host, seoul_today());
     list($today, $total) = tistory_visitors($host);
-    // 티스토리 공개 페이지에는 댓글 합계가 없다. 글이 없으면 댓글도 0이다.
-    send_counts($posts, $posts === 0 ? 0 : null, $today, $total, $posts === 0 ? 0 : $postsToday, null);
+    // 글 목록의 commentCount 칸을 더한다. 빈 칸은 0이다. 목록에 없는 글이 있으면 합을 비운다.
+    $comments = $posts === 0 ? 0 : tistory_comments($host, $posts);
+    send_counts($posts, $comments, $today, $total, $posts === 0 ? 0 : $postsToday, $posts === 0 ? 0 : null);
 }
 
 $fetchUrl = $blog;
