@@ -1,0 +1,6 @@
+# 검색엔진이 이 폴더의 파일까지 결과로 올리지 않게 한다.
+# Directory의 AllowOverride가 None이면 이 파일은 적용되지 않는다.
+# 그때는 README의 Header 줄을 VirtualHost에 넣고 httpd를 다시 읽힌다.
+<IfModule mod_headers.c>
+  Header set X-Robots-Tag "noindex, nofollow, noarchive, nosnippet"
+</IfModule>

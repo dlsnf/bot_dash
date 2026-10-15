@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow, noarchive, nosnippet, noimageindex">
+  <meta name="googlebot" content="noindex, nofollow, noarchive, nosnippet, noimageindex">
+  <meta name="bingbot" content="noindex, nofollow, noarchive">
+  <meta name="Yeti" content="noindex, nofollow, noarchive">
+  <meta name="Daumoa" content="noindex, nofollow">
+  <meta name="theme-color" content="#07070f">
+  <title>로그인 · 봇대시</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='4' fill='%235266eb'/%3E%3C/svg%3E">
+  <script>
+    (function () {
+      if (/\/bot_dash$/i.test(location.pathname)) {
+        location.replace(location.pathname + "/" + location.search + location.hash);
+        return;
+      }
+      try {
+        var raw = localStorage.getItem("botdash_session");
+        if (!raw) {
+          raw = sessionStorage.getItem("botdash_session");
+          if (raw) {
+            localStorage.setItem("botdash_session", raw);
+            sessionStorage.removeItem("botdash_session");
+          }
+        }
+        if (!raw) return;
+        var data = JSON.parse(raw);
+        if (!data || !data.user || !data.at || !data.stamp) return;
+        if (Date.now() - data.at > 30 * 24 * 60 * 60 * 1000) {
+          localStorage.removeItem("botdash_session");
+          sessionStorage.removeItem("botdash_session");
+          return;
+        }
+        try { sessionStorage.removeItem("botdash_next"); } catch (e) {}
+        location.replace("index.html");
+      } catch (error) {}
+    })();
+  </script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body data-page="login">
+  <div class="login-shell">
+    <section class="login-hero">
+      <div>
+        <p class="eyebrow">BOT DASH</p>
+        <h1>여러 캐릭터의 오늘을 한 화면에서.</h1>
+      </div>
+      <p>블로그 방문자, 글 수, 계정, 루틴을 카드로 모아 보는 내부용 대시보드입니다.</p>
+    </section>
+    <section class="login-panel">
+      <div class="login-card">
+        <h2>로그인</h2>
+        <p>내부에서 쓰는 아이디와 비밀번호를 입력하세요.</p>
+        <form id="loginForm" class="login-form" autocomplete="on">
+          <p id="loginAlert" class="alert" role="alert" hidden></p>
+          <label class="field">
+            <span>아이디</span>
+            <input id="username" name="username" type="text" autocomplete="username" spellcheck="false" required>
+          </label>
+          <label class="field">
+            <span>비밀번호</span>
+            <input id="password" name="password" type="password" autocomplete="current-password" required>
+          </label>
+          <label class="remember">
+            <input id="rememberUser" type="checkbox">
+            <span>아이디 저장</span>
+          </label>
+          <button type="submit" class="submit" id="loginSubmit">로그인</button>
+        </form>
+        <!-- <p class="fine-print">이 화면의 로그인은 편의 기능입니다. 인터넷에 열린 도메인이라면 서버에서 Basic Auth나 IP 제한을 먼저 거세요. 비밀번호는 <code>js/config.js</code>에 있으며, 배포할 때 직접 바꿉니다.</p> -->
+      </div>
+    </section>
+  </div>
+  <noscript>
+    <style>body[data-page="login"] .login-shell { visibility: visible !important; }</style>
+    <p class="notice wrap">이 대시보드는 JavaScript가 필요합니다.</p>
+  </noscript>
+  <script src="js/config.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

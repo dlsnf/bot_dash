@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow, noarchive, nosnippet, noimageindex">
+  <meta name="googlebot" content="noindex, nofollow, noarchive, nosnippet, noimageindex">
+  <meta name="bingbot" content="noindex, nofollow, noarchive">
+  <meta name="Yeti" content="noindex, nofollow, noarchive">
+  <meta name="Daumoa" content="noindex, nofollow">
+  <meta name="theme-color" content="#07070f">
+  <title>캐릭터 상세 · 봇대시</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='4' fill='%235266eb'/%3E%3C/svg%3E">
+  <script>
+    (function () {
+      if (/\/bot_dash$/i.test(location.pathname)) {
+        location.replace(location.pathname + "/" + location.search + location.hash);
+        return;
+      }
+      try {
+        var raw = localStorage.getItem("botdash_session");
+        if (!raw) {
+          raw = sessionStorage.getItem("botdash_session");
+          if (raw) {
+            localStorage.setItem("botdash_session", raw);
+            sessionStorage.removeItem("botdash_session");
+          }
+        }
+        if (!raw) throw new Error("no-session");
+        var data = JSON.parse(raw);
+        if (!data || !data.user || !data.at || !data.stamp) throw new Error("bad-session");
+        if (Date.now() - data.at > 30 * 24 * 60 * 60 * 1000) throw new Error("expired");
+      } catch (error) {
+        try { localStorage.removeItem("botdash_session"); } catch (e) {}
+        try { sessionStorage.removeItem("botdash_session"); } catch (e) {}
+        var file = location.pathname.split("/").pop() || "detail.html";
+        try { sessionStorage.setItem("botdash_next", file + location.search); } catch (e) {}
+        location.replace("login.html");
+      }
+    })();
+  </script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body data-page="detail" class="page-detail">
+  <div class="detail-sheet" id="detailSheet">
+    <div class="swipe-handle" id="swipeHandle">
+      <span></span>
+      <p>아래로 내리면 닫힙니다</p>
+    </div>
+    <header class="detail-top">
+      <a class="btn-dark" id="backLink" href="index.html"><i class="fa-solid fa-arrow-left" aria-hidden="true"></i> 대시보드</a>
+      <button type="button" id="logoutBtn" class="btn btn-logout"><i class="fa-solid fa-right-from-bracket" aria-hidden="true"></i> 로그아웃</button>
+    </header>
+    <p id="notice" class="notice" role="status" hidden></p>
+    <main id="detailRoot">
+      <div class="skeleton sk-block" aria-hidden="true"></div>
+    </main>
+  </div>
+  <noscript><p class="notice wrap">이 대시보드는 JavaScript가 필요합니다.</p></noscript>
+  <script src="js/config.js"></script>
+  <script src="js/parser.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

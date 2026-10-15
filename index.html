@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow, noarchive, nosnippet, noimageindex">
+  <meta name="googlebot" content="noindex, nofollow, noarchive, nosnippet, noimageindex">
+  <meta name="bingbot" content="noindex, nofollow, noarchive">
+  <meta name="Yeti" content="noindex, nofollow, noarchive">
+  <meta name="Daumoa" content="noindex, nofollow">
+  <meta name="theme-color" content="#07070f">
+  <style>
+    body.is-booting .topbar,
+    body.is-booting main,
+    body.is-booting .footer,
+    body.is-booting #modal { display: none; }
+    body:not(.is-booting) .boot-screen { display: none; }
+  </style>
+  <title>봇대시 · 캐릭터 블로그 현황</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='4' fill='%235266eb'/%3E%3C/svg%3E">
+  <script>
+    (function () {
+      if (/\/bot_dash$/i.test(location.pathname)) {
+        location.replace(location.pathname + "/" + location.search + location.hash);
+        return;
+      }
+      try {
+        var raw = localStorage.getItem("botdash_session");
+        if (!raw) {
+          raw = sessionStorage.getItem("botdash_session");
+          if (raw) {
+            localStorage.setItem("botdash_session", raw);
+            sessionStorage.removeItem("botdash_session");
+          }
+        }
+        if (!raw) throw new Error("no-session");
+        var data = JSON.parse(raw);
+        if (!data || !data.user || !data.at || !data.stamp) throw new Error("bad-session");
+        if (Date.now() - data.at > 30 * 24 * 60 * 60 * 1000) throw new Error("expired");
+      } catch (error) {
+        try { localStorage.removeItem("botdash_session"); } catch (e) {}
+        try { sessionStorage.removeItem("botdash_session"); } catch (e) {}
+        var file = location.pathname.split("/").pop() || "index.html";
+        try { sessionStorage.setItem("botdash_next", file + location.search); } catch (e) {}
+        location.replace("login.html");
+      }
+    })();
+  </script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body data-page="dashboard" class="is-booting">
+  <a class="skip" href="#cards">캐릭터 목록으로 건너뛰기</a>
+  <div id="bootScreen" class="boot-screen" role="status">
+    <div class="wrap">
+      <p class="sr-only">화면을 불러오는 중입니다.</p>
+      <div class="boot-top">
+        <div class="boot-brand">
+          <div class="skeleton sk-eyebrow"></div>
+          <div class="skeleton sk-title"></div>
+        </div>
+        <div class="boot-metrics">
+          <div class="skeleton sk-metric"></div>
+          <div class="skeleton sk-metric"></div>
+        </div>
+      </div>
+      <div class="skeleton sk-tab"></div>
+      <div class="card-grid" aria-hidden="true">
+        <article class="card skeleton-card"><div class="skeleton sk-avatar"></div><div class="skeleton sk-line"></div><div class="skeleton sk-num"></div><div class="skeleton sk-line short"></div></article>
+        <article class="card skeleton-card"><div class="skeleton sk-avatar"></div><div class="skeleton sk-line"></div><div class="skeleton sk-num"></div><div class="skeleton sk-line short"></div></article>
+        <article class="card skeleton-card"><div class="skeleton sk-avatar"></div><div class="skeleton sk-line"></div><div class="skeleton sk-num"></div><div class="skeleton sk-line short"></div></article>
+        <article class="card skeleton-card"><div class="skeleton sk-avatar"></div><div class="skeleton sk-line"></div><div class="skeleton sk-num"></div><div class="skeleton sk-line short"></div></article>
+      </div>
+    </div>
+  </div>
+  <header class="topbar" id="topbar">
+    <div class="wrap topbar-inner">
+      <div class="brand-row">
+        <div class="brand">
+          <p class="eyebrow">BOT DASH</p>
+          <h1>캐릭터 블로그 현황</h1>
+        </div>
+        <div class="metrics" aria-label="요약">
+          <div class="metric metric-accent">
+            <span class="metric-label">오늘 총 방문자</span>
+            <strong id="statVisitors">—</strong>
+          </div>
+          <div class="metric metric-total">
+            <span class="metric-label">전체 총 방문자</span>
+            <strong id="statTotal">—</strong>
+          </div>
+        </div>
+        <div class="top-actions">
+          <button type="button" id="toolsToggle" class="btn btn-toggle" aria-expanded="false" aria-controls="toolPanel">
+            <i class="fa-solid fa-sliders" aria-hidden="true"></i>
+            <span class="toggle-label">필터</span>
+            <i class="fa-solid fa-chevron-down toggle-chevron" aria-hidden="true"></i>
+          </button>
+          <button type="button" id="logoutBtn" class="btn btn-logout">
+            <i class="fa-solid fa-right-from-bracket" aria-hidden="true"></i>
+            로그아웃
+          </button>
+        </div>
+      </div>
+      <div id="toolPanel" class="tool-panel">
+        <div class="tool-panel-inner">
+          <div class="tool-row">
+            <div class="search">
+              <label class="sr-only" for="searchInput">캐릭터 검색</label>
+              <input id="searchInput" type="search" placeholder="이름, 별명, 계정, 블로그 검색" autocomplete="off" enterkeyhint="search">
+              <button type="button" id="clearSearch" class="clear-search" hidden aria-label="검색어 지우기">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+              </button>
+            </div>
+            <div id="filterTabs" class="filter-tabs" role="group" aria-label="방문자 필터">
+              <button type="button" data-filter="all" aria-pressed="true">전체 <span class="count" id="count-all">0</span></button>
+              <button type="button" data-filter="has" aria-pressed="false">방문자 있음 <span class="count" id="count-has">0</span></button>
+              <button type="button" data-filter="zero" aria-pressed="false">방문자 0 <span class="count" id="count-zero">0</span></button>
+            </div>
+            <label class="sort">
+              <span class="sr-only">정렬</span>
+              <select id="sortSelect">
+                <option value="visitors_desc">오늘 방문자 많은 순</option>
+                <option value="visitors_asc">오늘 방문자 적은 순</option>
+                <option value="name">이름순</option>
+                <option value="drop">전일 대비 감소 큰 순</option>
+                <option value="posts">글 수 많은 순</option>
+              </select>
+            </label>
+            <button type="button" id="refreshBtn" class="btn"><i class="fa-solid fa-rotate-right" aria-hidden="true"></i> 새로고침</button>
+            <button type="button" id="exportBtn" class="btn" disabled><i class="fa-solid fa-download" aria-hidden="true"></i> 내보내기</button>
+          </div>
+          <div class="time-notes">
+            <p class="time-note" id="updatedAt">화면 갱신 —</p>
+            <p class="time-note" id="statsBasis">통계 기준 —</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </header>
+  <main id="content">
+    <div class="wrap">
+      <p id="notice" class="notice" role="status" hidden></p>
+      <div class="view-tabs" role="tablist" aria-label="화면 전환">
+        <button type="button" id="tabCards" role="tab" aria-selected="true" aria-controls="cards">
+          <i class="fa-solid fa-table-cells" aria-hidden="true"></i><span class="tab-label">캐릭터(<span id="tabCardCount" class="tab-count">—</span>)</span>
+        </button>
+        <button type="button" id="tabStats" role="tab" aria-selected="false" aria-controls="statsPanel" tabindex="-1">
+          <i class="fa-solid fa-chart-column" aria-hidden="true"></i><span class="tab-label">통계</span>
+        </button>
+      </div>
+      <p id="statErrors" class="metric-sub tab-errors" hidden></p>
+      <p id="resultInfo" class="sr-only" aria-live="polite"></p>
+      <section id="cards" role="tabpanel" aria-labelledby="tabCards" aria-label="캐릭터">
+        <div id="cardGrid" class="card-grid" aria-busy="true">
+          <article class="card skeleton-card" aria-hidden="true"><div class="skeleton sk-avatar"></div><div class="skeleton sk-line"></div><div class="skeleton sk-num"></div><div class="skeleton sk-line short"></div></article>
+          <article class="card skeleton-card" aria-hidden="true"><div class="skeleton sk-avatar"></div><div class="skeleton sk-line"></div><div class="skeleton sk-num"></div><div class="skeleton sk-line short"></div></article>
+          <article class="card skeleton-card" aria-hidden="true"><div class="skeleton sk-avatar"></div><div class="skeleton sk-line"></div><div class="skeleton sk-num"></div><div class="skeleton sk-line short"></div></article>
+        </div>
+        <div id="emptyState" class="empty" hidden></div>
+      </section>
+      <section id="statsPanel" class="stats-panel" role="tabpanel" aria-labelledby="tabStats" hidden>
+        <div class="chart-card">
+          <div class="chart-head">
+            <h2 id="chartTitle">오늘 방문자</h2>
+            <p>방문자 수가 없는 캐릭터는 0으로 표시됩니다. 오늘·전체 방문자와 글·댓글은 블로그마다 따로 셉니다.</p>
+          </div>
+          <div class="chart-wrap" id="chartWrap">
+            <canvas id="visitorChart" aria-hidden="true"></canvas>
+          </div>
+          <p id="chartEmpty" class="chart-empty" hidden></p>
+        </div>
+        <div id="statsTable"></div>
+      </section>
+    </div>
+  </main>
+  <footer class="footer">
+    <div class="wrap">
+      <p>내부용 화면입니다. 이 로그인만으로는 외부 접근이 막히지 않습니다. 웹서버에서 Basic Auth, IP 제한, 내부망 접근을 함께 설정하세요.</p>
+    </div>
+  </footer>
+  <div id="modal" class="modal" hidden>
+    <div class="modal-backdrop" data-close="true"></div>
+    <div class="modal-dialog" id="modalDialog" role="dialog" aria-modal="true" aria-labelledby="detailTitle">
+      <div class="modal-toolbar">
+        <button type="button" class="modal-close" data-close="true" aria-label="닫기"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M4.2 4.2 L11.8 11.8 M11.8 4.2 L4.2 11.8" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg></button>
+      </div>
+      <div id="modalBody"></div>
+    </div>
+  </div>
+  <noscript><p class="notice wrap">이 대시보드는 JavaScript가 필요합니다.</p></noscript>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="js/config.js"></script>
+  <script src="js/parser.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
