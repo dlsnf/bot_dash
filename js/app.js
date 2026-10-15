@@ -6,10 +6,12 @@
 (function () {
   // 카운터 숫자가 올라가는 시간. 단위는 밀리초.
   // 작은 수는 MIN, 차이가 큰 수는 MAX까지 늘어난다. 1000이면 1초.
-  var COUNT_UP_MIN_MS = 1200;
-  var COUNT_UP_MAX_MS = 2000;
+  var COUNT_UP_MIN_MS = 1100;
+  var COUNT_UP_MAX_MS = 1300;
   var COUNT_UP_BASE_MS = 1000;
   var COUNT_UP_SCALE = 180;
+  // 페이지를 켜 둔 채로 방문자 수를 다시 확인하는 간격. 600000이면 10분.
+  var COUNT_REFRESH_MS = 600000;
 
   var STORAGE = {
     filter: "botdash_filter",
@@ -44,7 +46,11 @@
     activeId: null,
     lastFocus: null,
     entryConsumed: false,
-    lockTimer: 0
+    lockTimer: 0,
+    bootTimer: 0,
+    countTimer: 0,
+    countRefreshBusy: false,
+    countRefreshGen: 0
   };
 
   document.addEventListener("DOMContentLoaded", boot);
@@ -626,6 +632,8 @@
         return;
       }
       freezeReel(el, to);
+      // 올라가는 도중에 더 큰 값이 오면, 끝난 자리에서 그 값으로 한 번 더 올린다.
+      if (typeof el._reelWant === "number" && el._reelWant !== to) commitReel(el, el._reelWant);
     }
     function onEnd(event) {
       if (!event.target.classList || !event.target.classList.contains("odometer-ribbon-inner")) return;
@@ -652,8 +660,11 @@
       return;
     }
     value = Math.max(0, Math.round(Number(value)));
-    if (!el.isConnected) return;
-    if (el._reelBusy) return;
+    // 카드가 문서에 붙기 전에 만들어져도 숫자를 그린다. 붙기 전에 건너뛰면 빈 칸으로 남는다.
+    if (el._reelBusy) {
+      el._reelWant = value;
+      return;
+    }
     var current = typeof el._reelCurrent === "number" ? el._reelCurrent : 0;
     if (current === value && el.classList.contains("is-settled")) return;
     if (reducedMotion || current === value) {
@@ -684,7 +695,6 @@
     if (!el) return;
     el._reelWant = value == null || !isFinite(Number(value)) ? null : Math.max(0, Math.round(Number(value)));
     whenCountsSettle(el, function () {
-      if (!el.isConnected) return;
       commitReel(el, el._reelWant);
     });
   }
@@ -1082,8 +1092,64 @@
 
   function paintBlogCounts(key) {
     document.querySelectorAll("[data-blog-counts]").forEach(function (el) {
-      if (el.getAttribute("data-blog-counts") === key) fillBlogCounts(el, key);
+      var elKey = el.getAttribute("data-blog-counts");
+      if (key && elKey !== key) return;
+      fillBlogCounts(el, elKey);
     });
+  }
+
+  function applyCountPayload(key, data) {
+    state.blogCounts[key] = {
+      status: "ok",
+      posts: normalizeCount(data && data.posts),
+      comments: normalizeCount(data && data.comments),
+      today: normalizeCount(data && data.today),
+      total: normalizeCount(data && data.total),
+      postsToday: normalizeCount(data && data.postsToday),
+      commentsToday: normalizeCount(data && data.commentsToday)
+    };
+  }
+
+  // 이미 보이는 숫자에서 새 숫자로 올린다. 집계 중으로 바꾸면 릴이 지워져 0부터 다시 센다.
+  function refreshLiveCounts() {
+    if (state.countRefreshBusy || state.loading || !state.ready || countsPending()) return;
+    if (document.body.classList.contains("is-booting")) return;
+    var keys = [];
+    state.characters.forEach(function (character) {
+      (character.blogs || []).forEach(function (blog) {
+        var key = countableBlogUrl(blog.url || "");
+        if (key && keys.indexOf(key) < 0) keys.push(key);
+      });
+    });
+    if (!keys.length) return;
+    var gen = state.countRefreshGen;
+    state.countRefreshBusy = true;
+    var left = keys.length;
+    function finish() {
+      left -= 1;
+      if (left > 0) return;
+      state.countRefreshBusy = false;
+      if (gen !== state.countRefreshGen || state.loading) return;
+      applyLiveCounts(null);
+    }
+    keys.forEach(function (key) {
+      fetch("profile.php?view=counts&blog=" + encodeURIComponent(key), { headers: { "Accept": "application/json" } })
+        .then(function (response) {
+          if (!response.ok) throw new Error("counts");
+          return response.json();
+        })
+        .then(function (data) {
+          if (gen !== state.countRefreshGen) return;
+          applyCountPayload(key, data);
+        })
+        .catch(function () {})
+        .then(finish, finish);
+    });
+  }
+
+  function startCountWatch() {
+    if (state.countTimer) return;
+    state.countTimer = setInterval(refreshLiveCounts, COUNT_REFRESH_MS);
   }
 
   function requestBlogCounts() {
@@ -1103,15 +1169,7 @@
           return response.json();
         })
         .then(function (data) {
-          state.blogCounts[key] = {
-            status: "ok",
-            posts: normalizeCount(data && data.posts),
-            comments: normalizeCount(data && data.comments),
-            today: normalizeCount(data && data.today),
-            total: normalizeCount(data && data.total),
-            postsToday: normalizeCount(data && data.postsToday),
-            commentsToday: normalizeCount(data && data.commentsToday)
-          };
+          applyCountPayload(key, data);
           applyLiveCounts(key);
         })
         .catch(function () {
@@ -1240,17 +1298,13 @@
     );
   }
 
-  function renderCard(character, maxVisitors) {
+  function renderCard(character) {
     if (!character.ok) return renderErrorCard(character);
     var level = visitorLevel(character.todayVisitors);
     var classes = ["card", "is-" + level];
     if (isBigDrop(character)) classes.push("is-drop");
-    var ratio = 0;
-    if (maxVisitors > 0 && character.todayVisitors > 0) {
-      ratio = Math.max(6, Math.round((character.todayVisitors / maxVisitors) * 100));
-    }
     return h("article", { class: classes.join(" "), "data-character": character.id },
-      h("div", { class: "meter", "aria-hidden": "true" }, h("span", { style: "width:" + ratio + "%" })),
+      h("div", { class: "meter", "aria-hidden": "true" }, h("span")),
       detailLink(character.id, character.name + " 상세 페이지"),
       h("div", { class: "card-body" },
         h("div", { class: "card-head" },
@@ -1374,12 +1428,8 @@
       return;
     }
     empty.hidden = true;
-    var max = 0;
-    state.characters.forEach(function (row) {
-      if (row.ok && row.todayVisitors > max) max = row.todayVisitors;
-    });
     grid.replaceChildren();
-    list.forEach(function (row) { grid.appendChild(renderCard(row, max)); });
+    list.forEach(function (row) { grid.appendChild(renderCard(row)); });
   }
 
   function countText(blog) {
@@ -1569,10 +1619,6 @@
   function paintVisitorFigures() {
     syncLiveVisitors();
     renderMetrics();
-    var max = 0;
-    state.characters.forEach(function (row) {
-      if (row.ok && row.todayVisitors > max) max = row.todayVisitors;
-    });
     document.querySelectorAll("[data-character]").forEach(function (card) {
       var character = findById(card.getAttribute("data-character"));
       if (!character || !character.ok) return;
@@ -1581,12 +1627,6 @@
       });
       card.classList.remove("is-unknown", "is-zero", "is-low", "is-mid", "is-high");
       card.classList.add("is-" + visitorLevel(character.todayVisitors));
-      var bar = card.querySelector(".meter > span");
-      // 집계가 끝나기 전에는 0에 둔다. 중간 합계로 막대가 여러 번 차지 않게 한다.
-      if (bar && !countsPending()) {
-        var ratio = max > 0 && character.todayVisitors > 0 ? Math.max(6, Math.round((character.todayVisitors / max) * 100)) : 0;
-        bar.style.width = ratio + "%";
-      }
     });
     document.querySelectorAll("[data-stat-today]").forEach(function (el) {
       var character = findById(el.getAttribute("data-stat-today"));
@@ -1596,6 +1636,33 @@
       var character = findById(el.getAttribute("data-stat-total"));
       if (character) setHostedOdometer(el, character.totalVisitors);
     });
+  }
+
+  // 카드 순서가 확정된 뒤에만 본문을 연다.
+  function revealDashboard(force) {
+    if (!document.body.classList.contains("is-booting")) return;
+    if (!force && countsPending()) return;
+    if (state.bootTimer) {
+      clearTimeout(state.bootTimer);
+      state.bootTimer = 0;
+    }
+    document.body.classList.remove("is-booting");
+    if (state.view !== "stats") return;
+    requestAnimationFrame(function () {
+      if (state.chart && state.chart.resize) state.chart.resize();
+      else {
+        renderStatsTable();
+        renderChart();
+      }
+    });
+  }
+
+  function armBootHold() {
+    if (!document.body.classList.contains("is-booting") || state.bootTimer) return;
+    state.bootTimer = setTimeout(function () {
+      state.bootTimer = 0;
+      revealDashboard(true);
+    }, 12000);
   }
 
   function reorderCards(list) {
@@ -1613,21 +1680,29 @@
   }
 
   function applyLiveCounts(key) {
-    var before = visibleCharacters().map(function (row) { return row.id; }).join("|");
     syncLiveVisitors();
     var list = visibleCharacters();
-    var after = list.map(function (row) { return row.id; }).join("|");
-    if (before !== after && document.getElementById("cardGrid")) {
-      if (!reorderCards(list)) {
-        render();
-        return;
+    var pending = countsPending();
+    // 응답이 하나씩 올 때마다 옮기면 카드가 겹쳐 보인다. 집계가 끝난 뒤 한 번만 맞춘다.
+    if (!pending && document.getElementById("cardGrid")) {
+      var current = [];
+      document.querySelectorAll("#cardGrid article.card[data-character]").forEach(function (card) {
+        current.push(card.getAttribute("data-character"));
+      });
+      if (current.join("|") !== list.map(function (row) { return row.id; }).join("|")) {
+        if (!reorderCards(list)) {
+          render();
+          return;
+        }
       }
-    } else if (state.view === "stats") {
+    }
+    if (!pending && state.view === "stats") {
       renderStatsTable();
       renderChart();
     }
     paintVisitorFigures();
     paintBlogCounts(key);
+    if (!pending) revealDashboard();
   }
 
   function render(options) {
@@ -1652,7 +1727,9 @@
       if (!current) closeModal();
       else if (body) body.replaceChildren(buildDetailView(current));
     }
-    document.body.classList.remove("is-booting");
+    // 방문자 수가 오기 전에 열면 기본 순서가 보였다가 다시 정렬된다.
+    if (!countsPending()) revealDashboard();
+    else armBootHold();
   }
 
   function resetView() {
@@ -2015,6 +2092,7 @@
 
   async function loadAndRender() {
     if (state.loading) return;
+    state.countRefreshGen += 1;
     state.blogCounts = {};
     state.loading = true;
     setLoading(true);
@@ -2074,7 +2152,12 @@
     function select(view) {
       state.view = view === "stats" ? "stats" : "cards";
       storageSet(STORAGE.view, state.view);
-      render();
+      // 탭만 바꿀 때 카드를 다시 만들면, 집계가 끝난 숫자가 빈 칸으로 남는다.
+      syncView();
+      if (state.view === "stats") {
+        renderStatsTable();
+        renderChart();
+      }
     }
     tabs.forEach(function (button, index) {
       button.addEventListener("click", function () {
@@ -2205,6 +2288,7 @@
     loadPrefs();
     bindDashboard();
     loadAndRender();
+    startCountWatch();
   }
 
   function missingDetail(message) {
