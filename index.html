@@ -25,6 +25,14 @@
         return;
       }
       try {
+        if (history.scrollRestoration) history.scrollRestoration = "manual";
+        var nav = performance.getEntriesByType("navigation");
+        if (nav[0] && nav[0].type === "reload") {
+          sessionStorage.removeItem("botdash_scroll");
+          scrollTo(0, 0);
+        }
+      } catch (e) {}
+      try {
         var raw = localStorage.getItem("botdash_session");
         if (!raw) {
           raw = sessionStorage.getItem("botdash_session");

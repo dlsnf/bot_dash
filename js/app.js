@@ -13,6 +13,10 @@
   // 페이지를 켜 둔 채로 방문자 수를 다시 확인하는 간격. 600000이면 10분.
   var COUNT_REFRESH_MS = 600000;
 
+  try {
+    if (history.scrollRestoration) history.scrollRestoration = "manual";
+  } catch (error) {}
+
   var STORAGE = {
     filter: "botdash_filter",
     sort: "botdash_sort",
@@ -1036,6 +1040,30 @@
     return character.postCount == null ? -1 : character.postCount;
   }
 
+  function paintTodayPlus(span, today, label) {
+    var host = span.querySelector(".count-pair") || span;
+    var plus = host.querySelector(".count-plus");
+    if (!(today > 0)) {
+      if (plus) plus.remove();
+      return;
+    }
+    if (!plus) {
+      plus = document.createElement("span");
+      plus.className = "count-plus";
+      var sign = document.createElement("span");
+      sign.className = "count-plus-sign";
+      sign.setAttribute("aria-hidden", "true");
+      sign.textContent = "+";
+      var reel = document.createElement("span");
+      reel.className = "odometer";
+      plus.appendChild(sign);
+      plus.appendChild(reel);
+      host.appendChild(plus);
+    }
+    plus.title = "오늘 올라온 " + label + " " + formatNumber(today);
+    setOdometer(plus.querySelector(".odometer"), today);
+  }
+
   function fillBlogCounts(el, url) {
     var key = countableBlogUrl(url);
     var data = key ? state.blogCounts[key] : null;
@@ -1064,7 +1092,6 @@
     items.forEach(function (item) {
       keep[item.label] = true;
       var span = el.querySelector('[data-count-label="' + item.label + '"]');
-      var fresh = typeof item.today === "number" && item.today > 0;
       if (!span) {
         span = document.createElement("span");
         span.setAttribute("data-count-label", item.label);
@@ -1074,15 +1101,23 @@
         } else {
           span.appendChild(document.createTextNode(item.label + " "));
         }
+        var pair = document.createElement("span");
+        pair.className = "count-pair";
         var reel = document.createElement("span");
         reel.className = "odometer";
-        span.appendChild(reel);
+        pair.appendChild(reel);
+        span.appendChild(pair);
         el.appendChild(span);
       }
-      span.classList.toggle("is-fresh", fresh);
-      if (fresh) span.title = "오늘 새로 올라온 " + item.label + " " + formatNumber(item.today);
-      else span.removeAttribute("title");
-      setOdometer(span.querySelector(".odometer"), item.value);
+      // 총 6개 중 오늘 2개면 6이 아니라 4+2. 오늘 수가 없거나 총수보다 크면 총수만 보여 준다.
+      var showPlus = (item.label === "글" || item.label === "댓글")
+        && typeof item.value === "number"
+        && typeof item.today === "number"
+        && item.today > 0
+        && item.today <= item.value;
+      span.removeAttribute("title");
+      paintTodayPlus(span, showPlus ? item.today : 0, item.label);
+      setOdometer(span.querySelector(".count-pair > .odometer"), showPlus ? item.value - item.today : item.value);
     });
     Array.prototype.slice.call(el.children).forEach(function (child) {
       var label = child.getAttribute("data-count-label");
@@ -1800,6 +1835,11 @@
       state.bootTimer = 0;
     }
     document.body.classList.remove("is-booting");
+    if (pageReloaded()) window.scrollTo(0, 0);
+    else if (scrollAfterBoot) {
+      scrollAfterBoot = false;
+      applySavedScroll();
+    }
     if (state.view !== "stats") return;
     requestAnimationFrame(function () {
       if (state.chart && state.chart.resize) state.chart.resize();
@@ -2197,7 +2237,18 @@
     try { return decodeURIComponent(raw); } catch (error) { return raw; }
   }
 
-  function restoreScroll() {
+  var scrollAfterBoot = false;
+
+  function pageReloaded() {
+    try {
+      var nav = performance.getEntriesByType("navigation");
+      return !!(nav[0] && nav[0].type === "reload");
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function applySavedScroll() {
     var raw = null;
     try { raw = sessionStorage.getItem(STORAGE.scroll); } catch (error) {}
     if (raw == null) return;
@@ -2205,6 +2256,21 @@
     var y = Number(raw);
     if (!isFinite(y)) return;
     requestAnimationFrame(function () { window.scrollTo(0, y); });
+  }
+
+  function restoreScroll() {
+    // 새로고침은 맨 위. 상세에서 돌아올 때만 저장해 둔 위치를 되돌린다.
+    if (pageReloaded()) {
+      scrollAfterBoot = false;
+      try { sessionStorage.removeItem(STORAGE.scroll); } catch (error) {}
+      window.scrollTo(0, 0);
+      return;
+    }
+    if (document.body.classList.contains("is-booting")) {
+      scrollAfterBoot = true;
+      return;
+    }
+    applySavedScroll();
   }
 
   function consumeEntry() {

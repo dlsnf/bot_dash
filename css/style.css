@@ -761,12 +761,13 @@ button, input, select { font: inherit; color: inherit; }
 }
 
 .blog-counts > span { display: inline-flex; align-items: center; gap: 5px; min-height: 1.4em; line-height: 1; }
-.blog-counts .is-fresh {
+.blog-counts .count-pair { display: inline-flex; align-items: baseline; gap: 0.35em; }
+.blog-counts .count-plus {
+  display: inline-flex;
+  align-items: baseline;
+  flex: none;
   color: #34d399;
-  background: rgba(52, 211, 153, 0.16);
-  border-radius: 999px;
-  padding: 3px 8px;
-  font-weight: 750;
+  font-weight: 700;
 }
 .blog-counts i {
   display: inline-flex;
