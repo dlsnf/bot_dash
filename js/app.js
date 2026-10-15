@@ -1,7 +1,7 @@
 /**
  * 봇대시 화면 로직.
  * index.html, login.html, detail.html이 이 파일 하나를 같이 쓴다.
- * 캐릭터 원본은 서버에서 만들지 않고, 브라우저가 md와 stats.json을 읽어 그린다.
+ * 캐릭터 원본은 서버에서 만들지 않고, 로그인한 브라우저가 content.php 로 md와 stats.json을 읽어 그린다.
  */
 (function () {
   // 카운터 숫자가 올라가는 시간. 단위는 밀리초.
@@ -67,8 +67,18 @@
       return;
     }
     if (page === "login") initLogin();
-    else if (page === "detail") initDetailPage();
-    else initDashboard();
+    else {
+      ensureSession().then(function (ok) {
+        if (!ok) {
+          redirectToLogin();
+          return;
+        }
+        if (page === "detail") initDetailPage();
+        else initDashboard();
+      }).catch(function () {
+        redirectToLogin();
+      });
+    }
   }
 
   function showBootError(message) {
@@ -83,51 +93,24 @@
 
   /* ---------- 로그인 ---------- */
 
-  // 비밀번호 문자열이 바뀌면 이전 세션을 버리기 위한 짧은 표시값이다. 보안 해시가 아니다.
-  function credentialStamp() {
-    var text = String(DASHBOARD_CONFIG.auth.username) + "|" + String(DASHBOARD_CONFIG.auth.password);
-    var hash = 0;
-    for (var i = 0; i < text.length; i++) hash = (hash * 31 + text.charCodeAt(i)) >>> 0;
-    return String(hash);
-  }
-
-  function readSession() {
-    try {
-      var raw = localStorage.getItem(STORAGE.session);
-      if (!raw) {
-        raw = sessionStorage.getItem(STORAGE.session);
-        if (!raw) return null;
-        localStorage.setItem(STORAGE.session, raw);
-        sessionStorage.removeItem(STORAGE.session);
-      }
-      var data = JSON.parse(raw);
-      if (!data || typeof data !== "object") return null;
-      return data;
-    } catch (error) {
-      return null;
-    }
+  function ensureSession() {
+    return fetch("login.php?view=session", {
+      credentials: "same-origin",
+      cache: "no-store",
+      headers: { "Accept": "application/json" }
+    }).then(function (response) {
+      if (!response.ok) return { ok: false };
+      return response.json();
+    }).then(function (data) {
+      return !!(data && data.ok);
+    }).catch(function () {
+      return false;
+    });
   }
 
   function clearSession() {
     try { localStorage.removeItem(STORAGE.session); } catch (error) {}
     try { sessionStorage.removeItem(STORAGE.session); } catch (error) {}
-  }
-
-  function isAuthenticated() {
-    try {
-      var data = readSession();
-      var hours = Number(DASHBOARD_CONFIG.login.sessionHours || 720);
-      var valid = !!(data
-        && data.user === DASHBOARD_CONFIG.auth.username
-        && data.stamp === credentialStamp()
-        && data.at
-        && Date.now() - data.at <= hours * 3600 * 1000);
-      if (!valid) clearSession();
-      return valid;
-    } catch (error) {
-      clearSession();
-      return false;
-    }
   }
 
   function redirectToLogin() {
@@ -206,69 +189,84 @@
   }
 
   function initLogin() {
-    if (isAuthenticated()) {
-      try { sessionStorage.removeItem(STORAGE.next); } catch (error) {}
-      location.replace("index.html");
-      return;
-    }
-    document.body.classList.add("auth-ready");
-    var saved = readAttempts();
-    if (saved.lockUntil > Date.now()) startLock(saved.lockUntil);
-    var remember = document.getElementById("rememberUser");
-    var savedUser = storageGet(STORAGE.savedUser);
-    if (savedUser && remember) {
-      document.getElementById("username").value = savedUser;
-      remember.checked = true;
-    }
-
-    var form = document.getElementById("loginForm");
-    form.addEventListener("submit", function (event) {
-      event.preventDefault();
-      var attempts = readAttempts();
-      if (attempts.lockUntil > Date.now()) {
-        startLock(attempts.lockUntil);
-        return;
-      }
-      var username = document.getElementById("username").value.trim();
-      var password = document.getElementById("password").value;
-      if (!username || !password) {
-        showAlert("아이디와 비밀번호를 입력하세요.");
-        return;
-      }
-      if (username === DASHBOARD_CONFIG.auth.username && password === DASHBOARD_CONFIG.auth.password) {
-        if (remember && remember.checked) storageSet(STORAGE.savedUser, username);
-        else try { localStorage.removeItem(STORAGE.savedUser); } catch (error) {}
-        try { localStorage.removeItem(STORAGE.attempts); } catch (error) {}
-        localStorage.setItem(STORAGE.session, JSON.stringify({
-          user: username,
-          at: Date.now(),
-          stamp: credentialStamp()
-        }));
-        try { sessionStorage.removeItem(STORAGE.session); } catch (error) {}
-        var dest = null;
-        try { dest = sessionStorage.getItem(STORAGE.next); } catch (error) {}
+    ensureSession().then(function (ok) {
+      if (ok) {
         try { sessionStorage.removeItem(STORAGE.next); } catch (error) {}
-        location.replace(safeNext(dest));
+        location.replace("index.html");
         return;
       }
-      attempts.count += 1;
-      var max = Number(DASHBOARD_CONFIG.login.maxAttempts || 5);
-      document.getElementById("username").setAttribute("aria-invalid", "true");
-      document.getElementById("password").setAttribute("aria-invalid", "true");
-      if (attempts.count >= max) {
-        attempts.lockUntil = Date.now() + Number(DASHBOARD_CONFIG.login.lockMinutes || 10) * 60 * 1000;
-        writeAttempts(attempts);
-        startLock(attempts.lockUntil);
-        return;
+      document.body.classList.add("auth-ready");
+      var saved = readAttempts();
+      if (saved.lockUntil > Date.now()) startLock(saved.lockUntil);
+      var remember = document.getElementById("rememberUser");
+      var savedUser = storageGet(STORAGE.savedUser);
+      if (savedUser && remember) {
+        document.getElementById("username").value = savedUser;
+        remember.checked = true;
       }
-      writeAttempts(attempts);
-      showAlert("아이디 또는 비밀번호가 올바르지 않습니다. (" + attempts.count + "/" + max + ")");
+
+      var form = document.getElementById("loginForm");
+      form.addEventListener("submit", function (event) {
+        event.preventDefault();
+        var attempts = readAttempts();
+        if (attempts.lockUntil > Date.now()) {
+          startLock(attempts.lockUntil);
+          return;
+        }
+        var username = document.getElementById("username").value.trim();
+        var password = document.getElementById("password").value;
+        if (!username || !password) {
+          showAlert("아이디와 비밀번호를 입력하세요.");
+          return;
+        }
+        var submit = document.getElementById("loginSubmit");
+        if (submit) submit.disabled = true;
+        fetch("login.php", {
+          method: "POST",
+          credentials: "same-origin",
+          cache: "no-store",
+          headers: { "Content-Type": "application/json", "Accept": "application/json" },
+          body: JSON.stringify({ username: username, password: password })
+        }).then(function (response) {
+          return response.json().then(function (data) {
+            return { status: response.status, data: data || {} };
+          });
+        }).then(function (result) {
+          if (submit) submit.disabled = false;
+          if (result.status === 200 && result.data.ok) {
+            if (remember && remember.checked) storageSet(STORAGE.savedUser, username);
+            else try { localStorage.removeItem(STORAGE.savedUser); } catch (error) {}
+            try { localStorage.removeItem(STORAGE.attempts); } catch (error) {}
+            var dest = null;
+            try { dest = sessionStorage.getItem(STORAGE.next); } catch (error) {}
+            try { sessionStorage.removeItem(STORAGE.next); } catch (error) {}
+            location.replace(safeNext(dest));
+            return;
+          }
+          document.getElementById("username").setAttribute("aria-invalid", "true");
+          document.getElementById("password").setAttribute("aria-invalid", "true");
+          if (result.status === 503) {
+            showAlert("서버에 로그인 설정이 없습니다.");
+            return;
+          }
+          if (result.status === 429) {
+            var retry = Number(result.data.retryAfter || 600);
+            startLock(Date.now() + retry * 1000);
+            return;
+          }
+          showAlert("아이디 또는 비밀번호가 올바르지 않습니다.");
+        }).catch(function () {
+          if (submit) submit.disabled = false;
+          showAlert("로그인 요청에 실패했습니다.");
+        });
+      });
     });
   }
 
   function logoutUser() {
     clearSession();
-    location.replace("login.html");
+    fetch("login.php?view=logout", { method: "POST", credentials: "same-origin", cache: "no-store" })
+      .finally(function () { location.replace("login.html"); });
   }
 
   /* ---------- 데이터 ---------- */
@@ -299,7 +297,7 @@
       notices.push("파일을 직접 열면 마크다운을 읽지 못합니다. 웹서버로 열어 주세요.");
     }
     try {
-      var statsText = await fetchText("data/stats.json?t=" + stamp);
+      var statsText = await fetchText("content.php?f=" + encodeURIComponent("data/stats.json") + "&t=" + stamp);
       var parsed = JSON.parse(statsText);
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("형식");
       statsDoc = {
@@ -312,7 +310,7 @@
 
     var rows = await Promise.all(files.map(async function (file) {
       try {
-        var text = await fetchText("characters/" + encodeURIComponent(file) + "?t=" + stamp);
+        var text = await fetchText("content.php?f=" + encodeURIComponent("characters/" + file) + "&t=" + stamp);
         var parsedCharacter = CharacterParser.parse(text, file);
         if (!parsedCharacter.ok) {
           parsedCharacter.id = parsedCharacter.id || ("error:" + file);
@@ -1310,6 +1308,18 @@
     return h("span", { class: "visitor-paused", text: "미운영" });
   }
 
+  function platformIcon(name) {
+    var file = name === "네이버" ? "naver.jpg" : name === "티스토리" ? "tistory.jpg" : "";
+    if (!file) return null;
+    return h("img", {
+      class: "platform-icon",
+      src: "assets/app-icons/" + file,
+      alt: "",
+      width: "18",
+      height: "18"
+    });
+  }
+
   function blogsWithUrl(character) {
     return (character.blogs || []).filter(function (blog) {
       return String(blog.url || "").trim();
@@ -1350,7 +1360,8 @@
       var row = h("div", { class: blog.platform ? "blog-row" : "blog-row is-plain" });
       if (blog.platform) {
         row.appendChild(h("span", { class: "blog-platform" },
-          blog.platform,
+          platformIcon(blog.platform),
+          h("span", { class: "platform-name", text: blog.platform }),
           blog.paused ? pausedMark() : null
         ));
       }
@@ -2016,8 +2027,9 @@
     var list = h("ul", { class: "link-list" });
     blogs.forEach(function (blog) {
       var href = safeUrl(blog.url || "");
-      var item = h("li", null, h("strong", null,
-        blog.platform || "블로그",
+      var item = h("li", null, h("strong", { class: "blog-platform" },
+        platformIcon(blog.platform),
+        h("span", { class: "platform-name", text: blog.platform || "블로그" }),
         blog.paused ? pausedMark() : null
       ));
       if (blog.accountId) item.appendChild(h("span", { class: "kv" }, h("em", { text: "아이디" }), " " + blog.accountId));
@@ -2540,10 +2552,6 @@
       showBootError("parser.js를 불러오지 못했습니다.");
       return;
     }
-    if (!isAuthenticated()) {
-      redirectToLogin();
-      return;
-    }
     loadPrefs();
     bindDashboard();
     loadAndRender();
@@ -2621,10 +2629,6 @@
   }
 
   function initDetailPage() {
-    if (!isAuthenticated()) {
-      redirectToLogin();
-      return;
-    }
     var logout = document.getElementById("logoutBtn");
     if (logout) logout.addEventListener("click", logoutUser);
     bindSwipe();

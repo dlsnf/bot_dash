@@ -2,13 +2,11 @@
  * 설정 예시입니다. 이 파일만 GitHub에 올립니다.
  * 사용 전 복사하세요:  cp js/config.example.js js/config.js
  * js/config.js 는 .gitignore 대상이라 저장소에 올라가지 않습니다.
- * 비밀번호는 예시 값입니다. 서버에 배포할 때 config.js에서 직접 수정하세요.
+ * 비밀번호는 적지 않습니다. 서버의 /etc/bot_dash.env 또는 BOTDASH_USER, BOTDASH_PASSWORD 환경 변수가 검사합니다.
  */
 const DASHBOARD_CONFIG = {
   auth: {
-    username: "admin",
-    // 예시 값입니다. 서버에 배포할 때 직접 수정하세요.
-    password: "change-me-on-deploy"
+    username: "admin"
   },
   login: {
     maxAttempts: 5,

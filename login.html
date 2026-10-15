@@ -17,26 +17,6 @@
         location.replace(location.pathname + "/" + location.search + location.hash);
         return;
       }
-      try {
-        var raw = localStorage.getItem("botdash_session");
-        if (!raw) {
-          raw = sessionStorage.getItem("botdash_session");
-          if (raw) {
-            localStorage.setItem("botdash_session", raw);
-            sessionStorage.removeItem("botdash_session");
-          }
-        }
-        if (!raw) return;
-        var data = JSON.parse(raw);
-        if (!data || !data.user || !data.at || !data.stamp) return;
-        if (Date.now() - data.at > 30 * 24 * 60 * 60 * 1000) {
-          localStorage.removeItem("botdash_session");
-          sessionStorage.removeItem("botdash_session");
-          return;
-        }
-        try { sessionStorage.removeItem("botdash_next"); } catch (e) {}
-        location.replace("index.html");
-      } catch (error) {}
     })();
   </script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
@@ -71,7 +51,6 @@
           </label>
           <button type="submit" class="submit" id="loginSubmit">로그인</button>
         </form>
-        <!-- <p class="fine-print">이 화면의 로그인은 편의 기능입니다. 인터넷에 열린 도메인이라면 서버에서 Basic Auth나 IP 제한을 먼저 거세요. 비밀번호는 <code>js/config.js</code>에 있으며, 배포할 때 직접 바꿉니다.</p> -->
       </div>
     </section>
   </div>

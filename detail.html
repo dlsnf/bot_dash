@@ -25,26 +25,6 @@
           scrollTo(0, 0);
         }
       } catch (e) {}
-      try {
-        var raw = localStorage.getItem("botdash_session");
-        if (!raw) {
-          raw = sessionStorage.getItem("botdash_session");
-          if (raw) {
-            localStorage.setItem("botdash_session", raw);
-            sessionStorage.removeItem("botdash_session");
-          }
-        }
-        if (!raw) throw new Error("no-session");
-        var data = JSON.parse(raw);
-        if (!data || !data.user || !data.at || !data.stamp) throw new Error("bad-session");
-        if (Date.now() - data.at > 30 * 24 * 60 * 60 * 1000) throw new Error("expired");
-      } catch (error) {
-        try { localStorage.removeItem("botdash_session"); } catch (e) {}
-        try { sessionStorage.removeItem("botdash_session"); } catch (e) {}
-        var file = location.pathname.split("/").pop() || "detail.html";
-        try { sessionStorage.setItem("botdash_next", file + location.search); } catch (e) {}
-        location.replace("login.html");
-      }
     })();
   </script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">

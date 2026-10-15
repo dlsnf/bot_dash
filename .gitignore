@@ -5,6 +5,8 @@ data/stats.json
 js/config.js
 *.local
 .env
+.env.*
+!.env.example
 
 # 운영체제·편집기 잡동사니
 .DS_Store
