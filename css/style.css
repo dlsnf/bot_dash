@@ -113,7 +113,7 @@ button, input, select { font: inherit; color: inherit; }
   flex-direction: column;
   justify-content: center;
   gap: 8px;
-  min-width: 120px;
+  min-width: 130px;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 14px;
@@ -123,7 +123,11 @@ button, input, select { font: inherit; color: inherit; }
 .metric-label { display: block; color: var(--muted); font-size: 12px; line-height: 1.2; }
 
 .metric strong {
-  display: block;
+  display: flex;
+  align-items: flex-end;
+  height: 1em;
+  min-height: 1em;
+  max-height: 1em;
   font-size: 28px;
   line-height: 1;
   font-variant-numeric: tabular-nums;
@@ -408,6 +412,17 @@ button, input, select { font: inherit; color: inherit; }
 .chart-head h2 { margin: 0; font-size: 20px; }
 .chart-head p { margin: 0; color: var(--muted); font-size: 13px; max-width: 520px; line-height: 1.45; word-break: keep-all; }
 .chart-wrap { position: relative; height: 280px; margin-top: 8px; }
+.chart-wrap.is-pending canvas,
+.chart-wrap.is-pending .chart-values { visibility: hidden; }
+.chart-wrap.is-pending::after {
+  content: "";
+  position: absolute;
+  inset: 12px 8px 28px;
+  border-radius: 12px;
+  background: linear-gradient(90deg, #1a1a28 25%, #262636 37%, #1a1a28 63%);
+  background-size: 400% 100%;
+  animation: shimmer 1.4s ease infinite;
+}
 .chart-values { position: absolute; inset: 0; pointer-events: none; z-index: 1; }
 .chart-value {
   position: absolute;
@@ -453,6 +468,11 @@ button, input, select { font: inherit; color: inherit; }
   box-shadow: var(--shadow);
 }
 
+.card.is-moving {
+  z-index: 2;
+  transition: transform 0.45s ease;
+}
+
 .card-body {
   display: flex;
   flex-direction: column;
@@ -494,6 +514,7 @@ button, input, select { font: inherit; color: inherit; }
 .card-id { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0; }
 
 .avatar-btn {
+  position: relative;
   flex: none;
   padding: 0;
   border: 0;
@@ -522,10 +543,23 @@ button, input, select { font: inherit; color: inherit; }
 .avatar-lg { width: 84px; height: 84px; }
 
 .avatar-fallback {
+  position: relative;
   display: grid;
   place-items: center;
   color: var(--muted);
   font-size: 22px;
+}
+.avatar-btn.is-pending .avatar,
+.avatar-fallback.is-pending i { opacity: 0; }
+.avatar-btn.is-pending::before,
+.avatar-fallback.is-pending::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: linear-gradient(90deg, #1a1a28 25%, #262636 37%, #1a1a28 63%);
+  background-size: 400% 100%;
+  animation: shimmer 1.4s ease infinite;
 }
 
 .card-name { margin: 0; font-size: 20px; letter-spacing: -0.03em; }
@@ -583,12 +617,13 @@ button, input, select { font: inherit; color: inherit; }
   font-weight: 700;
   vertical-align: 1px;
 }
-.visitor-total { display: flex; align-items: flex-end; gap: 4px; margin: 0; color: var(--muted-strong); font-size: 15px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; }
+.visitor-total { display: flex; align-items: flex-end; gap: 4px; min-height: 1em; margin: 0; color: var(--muted-strong); font-size: 15px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; }
 .visitor-note { margin: 0 0 8px; color: var(--muted); font-size: 12px; }
 
 .visitor-num {
   display: flex;
   align-items: flex-end;
+  min-height: 1em;
   margin: 0;
   font-size: 52px;
   line-height: 1;
@@ -907,10 +942,34 @@ button, input, select { font: inherit; color: inherit; }
 .sk-line.short { width: 55%; }
 .sk-num { height: 48px; width: 42%; }
 .sk-block { height: 280px; margin-top: 16px; }
+.sk-visitor,
+.sk-total,
+.sk-metric-num,
+.sk-delta,
+.sk-count {
+  display: inline-block;
+  vertical-align: middle;
+  border-radius: 8px;
+}
+.sk-visitor { width: 2.2em; height: 0.7em; }
+.visitor-num > .sk-visitor { display: block; }
+.sk-total { width: 3.2em; height: 0.85em; }
+.sk-metric-num { display: block; width: 3.4em; height: 0.85em; }
+.sk-delta { width: 8.5em; height: 1em; }
+.sk-count { width: 2.2em; height: 0.9em; }
+.filter-tabs .count .sk-count { width: 1.15em; height: 0.85em; }
 
 @keyframes shimmer {
   from { background-position: 100% 0; }
   to { background-position: 0 0; }
+}
+
+.is-count-in,
+.is-fade-in { animation: count-in 0.8s ease-out; }
+
+@keyframes count-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 body.modal-open { overflow: hidden; }
@@ -1066,6 +1125,7 @@ body.photo-open { overflow: hidden; }
 }
 .stat-grid dt, .meta-list dt { color: var(--muted); font-size: 12px; }
 .stat-grid dd, .meta-list dd { margin: 2px 0 0; font-size: 22px; font-weight: 750; font-variant-numeric: tabular-nums; }
+.stat-grid dd { min-height: 1em; line-height: 1; }
 .meta-list dd { font-size: 16px; }
 .intro { white-space: pre-wrap; }
 .link-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }

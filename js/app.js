@@ -1,6 +1,6 @@
 /**
  * 봇대시 화면 로직.
- * index.html, login.html, detail.html이 이 파일 하나를 같이 쓴다.
+ * 숫자 릴은 js/reel.js, 통계 그래프는 js/chart.js, 로그인은 js/login.js 에 있다.
  * 캐릭터 원본은 서버에서 만들지 않고, 로그인한 브라우저가 content.php 로 md와 stats.json을 읽어 그린다.
  */
 (function () {
@@ -10,7 +10,10 @@
   var COUNT_UP_MAX_MS = 1300;
   var COUNT_UP_BASE_MS = 1000;
   var COUNT_UP_SCALE = 180;
+  // 저장해 둔 프로필 썸네일을 다시 받는 간격. 한 시간이 지나야 뒤에서 갱신한다.
+  var THUMB_REFRESH_MS = 60 * 60 * 1000;
   // 페이지를 켜 둔 채로 방문자 수를 다시 확인하는 간격. 600000이면 10분.
+  // 로그인 시각부터 세지 않고, 지금 시각의 10분 경계(정각, 10분, 20분…)에 맞춘다.
   var COUNT_REFRESH_MS = 600000;
 
   try {
@@ -25,7 +28,8 @@
     session: "botdash_session",
     attempts: "botdash_login_attempts",
     next: "botdash_next",
-    scroll: "botdash_scroll"
+    scroll: "botdash_scroll",
+    order: "botdash_order"
   };
   var FILTERS = { all: 1, has: 1, zero: 1 };
   var SORTS = { visitors_desc: 1, visitors_asc: 1, name: 1, drop: 1, posts: 1 };
@@ -54,8 +58,50 @@
     bootTimer: 0,
     countTimer: 0,
     countRefreshBusy: false,
-    countRefreshGen: 0
+    countRefreshGen: 0,
+    thumbs: {},
+    thumbArchive: {},
+    thumbRefreshGen: 0,
+    sortRanks: null,
+    cardPlaces: null,
+    cardColumns: 0,
+    cardMoving: false,
+    cardMoveGen: 0,
+    countsShown: false
   };
+
+  if (!window.BotDashReel || !window.BotDashChart || !window.BotDashLogin) {
+    document.addEventListener("DOMContentLoaded", function () {
+      document.body.classList.add("auth-ready");
+      document.body.classList.remove("is-booting");
+    });
+    return;
+  }
+
+  var formatNumber = window.BotDashReel.formatNumber;
+  var reducedMotion = window.BotDashReel.reducedMotion;
+  var paintStatic = window.BotDashReel.paintStatic;
+  var setOdometer = window.BotDashReel.setOdometer;
+  var setHostedOdometer = window.BotDashReel.setHostedOdometer;
+  window.BotDashChart.install({
+    state: state,
+    visibleCharacters: visibleCharacters,
+    visitorLevel: visitorLevel,
+    formatNumber: formatNumber,
+    paintStatic: paintStatic,
+    setOdometer: setOdometer,
+    reducedMotion: reducedMotion
+  });
+  var loginApi = window.BotDashLogin.create({
+    state: state,
+    STORAGE: STORAGE,
+    storageGet: storageGet,
+    storageSet: storageSet
+  });
+  var ensureSession = loginApi.ensureSession;
+  var redirectToLogin = loginApi.redirectToLogin;
+  var initLogin = loginApi.initLogin;
+  var logoutUser = loginApi.logoutUser;
 
   document.addEventListener("DOMContentLoaded", boot);
 
@@ -89,184 +135,6 @@
     note.className = "notice";
     note.textContent = message;
     host.prepend(note);
-  }
-
-  /* ---------- 로그인 ---------- */
-
-  function ensureSession() {
-    return fetch("login.php?view=session", {
-      credentials: "same-origin",
-      cache: "no-store",
-      headers: { "Accept": "application/json" }
-    }).then(function (response) {
-      if (!response.ok) return { ok: false };
-      return response.json();
-    }).then(function (data) {
-      return !!(data && data.ok);
-    }).catch(function () {
-      return false;
-    });
-  }
-
-  function clearSession() {
-    try { localStorage.removeItem(STORAGE.session); } catch (error) {}
-    try { sessionStorage.removeItem(STORAGE.session); } catch (error) {}
-  }
-
-  function redirectToLogin() {
-    var file = location.pathname.split("/").pop() || "index.html";
-    try { sessionStorage.setItem(STORAGE.next, file + location.search); } catch (error) {}
-    location.replace("login.html");
-  }
-
-  function safeNext(value) {
-    if (value === "index.html") return value;
-    if (typeof value !== "string") return "index.html";
-    var matched = /^detail\.html\?id=([^&]+)$/.exec(value);
-    if (!matched || matched[1].length > 200) return "index.html";
-    try {
-      return "detail.html?id=" + encodeURIComponent(decodeURIComponent(matched[1]));
-    } catch (error) {
-      return "index.html";
-    }
-  }
-
-  function readAttempts() {
-    try {
-      var data = JSON.parse(localStorage.getItem(STORAGE.attempts) || "");
-      if (!data || typeof data.count !== "number") return { count: 0, lockUntil: 0 };
-      return { count: data.count, lockUntil: data.lockUntil || 0 };
-    } catch (error) {
-      return { count: 0, lockUntil: 0 };
-    }
-  }
-
-  function writeAttempts(data) {
-    try { localStorage.setItem(STORAGE.attempts, JSON.stringify(data)); } catch (error) {}
-  }
-
-  function showAlert(message) {
-    var box = document.getElementById("loginAlert");
-    if (!box) return;
-    if (!message) {
-      box.hidden = true;
-      box.textContent = "";
-      return;
-    }
-    box.hidden = false;
-    box.textContent = message;
-  }
-
-  function setFormDisabled(disabled) {
-    ["username", "password", "rememberUser", "loginSubmit"].forEach(function (id) {
-      var field = document.getElementById(id);
-      if (field) field.disabled = disabled;
-    });
-  }
-
-  function lockMessage(lockUntil) {
-    var remain = Math.max(0, lockUntil - Date.now());
-    var minutes = Math.floor(remain / 60000);
-    var seconds = Math.floor((remain % 60000) / 1000);
-    return "로그인이 일시 잠겼습니다. " + minutes + "분 " + seconds + "초 후 다시 시도하세요.";
-  }
-
-  // 실패가 설정 횟수에 닿으면 잠시 입력을 막는다. 브라우저를 새로고침해도 시간은 유지된다.
-  function startLock(lockUntil) {
-    setFormDisabled(true);
-    showAlert(lockMessage(lockUntil));
-    clearInterval(state.lockTimer);
-    state.lockTimer = setInterval(function () {
-      if (Date.now() >= lockUntil) {
-        clearInterval(state.lockTimer);
-        writeAttempts({ count: 0, lockUntil: 0 });
-        setFormDisabled(false);
-        showAlert("다시 로그인할 수 있습니다.");
-        return;
-      }
-      showAlert(lockMessage(lockUntil));
-    }, 1000);
-  }
-
-  function initLogin() {
-    ensureSession().then(function (ok) {
-      if (ok) {
-        try { sessionStorage.removeItem(STORAGE.next); } catch (error) {}
-        location.replace("index.html");
-        return;
-      }
-      document.body.classList.add("auth-ready");
-      var saved = readAttempts();
-      if (saved.lockUntil > Date.now()) startLock(saved.lockUntil);
-      var remember = document.getElementById("rememberUser");
-      var savedUser = storageGet(STORAGE.savedUser);
-      if (savedUser && remember) {
-        document.getElementById("username").value = savedUser;
-        remember.checked = true;
-      }
-
-      var form = document.getElementById("loginForm");
-      form.addEventListener("submit", function (event) {
-        event.preventDefault();
-        var attempts = readAttempts();
-        if (attempts.lockUntil > Date.now()) {
-          startLock(attempts.lockUntil);
-          return;
-        }
-        var username = document.getElementById("username").value.trim();
-        var password = document.getElementById("password").value;
-        if (!username || !password) {
-          showAlert("아이디와 비밀번호를 입력하세요.");
-          return;
-        }
-        var submit = document.getElementById("loginSubmit");
-        if (submit) submit.disabled = true;
-        fetch("login.php", {
-          method: "POST",
-          credentials: "same-origin",
-          cache: "no-store",
-          headers: { "Content-Type": "application/json", "Accept": "application/json" },
-          body: JSON.stringify({ username: username, password: password })
-        }).then(function (response) {
-          return response.json().then(function (data) {
-            return { status: response.status, data: data || {} };
-          });
-        }).then(function (result) {
-          if (submit) submit.disabled = false;
-          if (result.status === 200 && result.data.ok) {
-            if (remember && remember.checked) storageSet(STORAGE.savedUser, username);
-            else try { localStorage.removeItem(STORAGE.savedUser); } catch (error) {}
-            try { localStorage.removeItem(STORAGE.attempts); } catch (error) {}
-            var dest = null;
-            try { dest = sessionStorage.getItem(STORAGE.next); } catch (error) {}
-            try { sessionStorage.removeItem(STORAGE.next); } catch (error) {}
-            location.replace(safeNext(dest));
-            return;
-          }
-          document.getElementById("username").setAttribute("aria-invalid", "true");
-          document.getElementById("password").setAttribute("aria-invalid", "true");
-          if (result.status === 503) {
-            showAlert("서버에 로그인 설정이 없습니다.");
-            return;
-          }
-          if (result.status === 429) {
-            var retry = Number(result.data.retryAfter || 600);
-            startLock(Date.now() + retry * 1000);
-            return;
-          }
-          showAlert("아이디 또는 비밀번호가 올바르지 않습니다.");
-        }).catch(function () {
-          if (submit) submit.disabled = false;
-          showAlert("로그인 요청에 실패했습니다.");
-        });
-      });
-    });
-  }
-
-  function logoutUser() {
-    clearSession();
-    fetch("login.php?view=logout", { method: "POST", credentials: "same-origin", cache: "no-store" })
-      .finally(function () { location.replace("login.html"); });
   }
 
   /* ---------- 데이터 ---------- */
@@ -359,7 +227,73 @@
     document.querySelectorAll("#filterTabs [data-filter]").forEach(function (button) {
       button.setAttribute("aria-pressed", button.getAttribute("data-filter") === state.filter ? "true" : "false");
     });
+    loadSortRanks();
     syncView();
+  }
+
+  // 정렬이 확정된 순서를 남긴다. 다음 로딩은 이 순서로 열고, 기준 숫자가 달라지면 다시 줄 세운다.
+  function loadSortRanks() {
+    state.sortRanks = {};
+    var raw = storageGet(STORAGE.order);
+    if (!raw) return;
+    try {
+      var parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
+      Object.keys(SORTS).forEach(function (sort) {
+        var table = parsed[sort];
+        if (!table || typeof table !== "object" || Array.isArray(table)) return;
+        var clean = {};
+        Object.keys(table).forEach(function (id) {
+          var rank = table[id];
+          if (typeof rank !== "number" || !isFinite(rank)) return;
+          clean[id] = rank;
+        });
+        if (Object.keys(clean).length) state.sortRanks[sort] = clean;
+      });
+    } catch (error) {
+      state.sortRanks = {};
+    }
+  }
+
+  function sortId(character) {
+    return character.id || String(character.fileName || "").replace(/\.md$/i, "");
+  }
+
+  function savedRank(id) {
+    var table = state.sortRanks && state.sortRanks[state.sort];
+    if (!table || !id) return null;
+    var rank = table[id];
+    return typeof rank === "number" ? rank : null;
+  }
+
+  // 집계 중에는 저장해 둔 순서를 유지한다. 기록이 없는 캐릭터만 뒤로 보낸다.
+  function compareSaved(a, b) {
+    var rankA = savedRank(sortId(a));
+    var rankB = savedRank(sortId(b));
+    if (rankA == null && rankB == null) return null;
+    if (rankA == null) return 1;
+    if (rankB == null) return -1;
+    return rankA - rankB;
+  }
+
+  function holdSortOrder() {
+    if (document.body.dataset.page === "detail") return false;
+    if (!state.sortRanks || !state.sortRanks[state.sort]) return false;
+    return countsPending();
+  }
+
+  function rememberSortOrder() {
+    if (document.body.dataset.page === "detail") return;
+    if (!state.ready || countsPending()) return;
+    var ranked = state.characters.slice().sort(compareCharacters);
+    var table = {};
+    ranked.forEach(function (character, index) {
+      var id = sortId(character);
+      if (id) table[id] = index;
+    });
+    if (!state.sortRanks) state.sortRanks = {};
+    state.sortRanks[state.sort] = table;
+    storageSet(STORAGE.order, JSON.stringify(state.sortRanks));
   }
 
   function haystack(character) {
@@ -391,12 +325,40 @@
     return character.yesterdayVisitors - character.todayVisitors;
   }
 
+  // 오늘 방문자 순은 그 캐릭터의 플랫폼 오늘 수를 모두 더한 값이다.
+  function liveTodayTotal(character) {
+    if (!character || !character.ok) return null;
+    var sum = 0;
+    var known = false;
+    countableBlogs(character).forEach(function (blog) {
+      var data = state.blogCounts[countableBlogUrl(blog.url)];
+      if (data && data.status === "ok" && data.today != null) {
+        known = true;
+        sum += data.today;
+      }
+    });
+    return known ? sum : null;
+  }
+
+  function todaySortValue(character) {
+    var live = liveTodayTotal(character);
+    if (live != null) return live;
+    if (countableBlogs(character).length) return null;
+    return character.todayVisitors;
+  }
+
   function compareCharacters(a, b) {
     if (a.ok !== b.ok) return a.ok ? -1 : 1;
     if (!a.ok) return String(a.fileName).localeCompare(String(b.fileName), "ko");
+    if (holdSortOrder()) {
+      var held = compareSaved(a, b);
+      if (held != null) return held;
+    }
     if (state.sort === "name") return String(a.name).localeCompare(String(b.name), "ko");
     if (state.sort === "visitors_asc") {
-      return (a.todayVisitors == null ? Infinity : a.todayVisitors) - (b.todayVisitors == null ? Infinity : b.todayVisitors);
+      var lowA = todaySortValue(a);
+      var lowB = todaySortValue(b);
+      return (lowA == null ? Infinity : lowA) - (lowB == null ? Infinity : lowB);
     }
     if (state.sort === "posts") return (postSortValue(b) - postSortValue(a));
     if (state.sort === "drop") {
@@ -404,7 +366,9 @@
       var right = dropAmount(b);
       return (right == null ? -Infinity : right) - (left == null ? -Infinity : left);
     }
-    return (b.todayVisitors == null ? -1 : b.todayVisitors) - (a.todayVisitors == null ? -1 : a.todayVisitors);
+    var highA = todaySortValue(a);
+    var highB = todaySortValue(b);
+    return (highB == null ? -1 : highB) - (highA == null ? -1 : highA);
   }
 
   function visibleCharacters() {
@@ -471,22 +435,6 @@
     return h("i", { class: className, "aria-hidden": "true" });
   }
 
-  var numberFormat = new Intl.NumberFormat("ko-KR");
-  var reducedMotion = false;
-  try { reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches; } catch (error) {}
-
-  function formatNumber(value) {
-    if (value == null || !isFinite(Number(value))) return "—";
-    return numberFormat.format(value);
-  }
-
-  // 자릿수 릴을 한 번만 끝까지 올린다. 큰 수는 중간 샘플을 자르면 자릿수가 되돌아가 보인다.
-  function countDigits(from, to) {
-    var max = Math.max(Math.abs(from), Math.abs(to));
-    if (max < 1) return 1;
-    return Math.max(1, Math.ceil(Math.log(max + 1) / Math.log(10)));
-  }
-
   function countsPending() {
     var keys = Object.keys(state.blogCounts);
     for (var i = 0; i < keys.length; i++) {
@@ -495,247 +443,106 @@
     return false;
   }
 
-  function digitColumns(from, to) {
-    var width = countDigits(from, to);
-    var columns = [];
-    var cap = 16;
-    var dir = to >= from ? 1 : -1;
-    for (var place = width - 1; place >= 0; place--) {
-      var pow = Math.pow(10, place);
-      var start = Math.floor(Math.abs(from) / pow) % 10;
-      var end = Math.floor(Math.abs(to) / pow) % 10;
-      var steps = Math.floor(Math.abs(to - from) / pow);
-      var need = (end - start + 10) % 10;
-      if (steps > cap) steps = cap - (cap % 10) + need;
-      else if (steps % 10 !== need) steps += (need - (steps % 10) + 10) % 10;
-      if (steps < need) steps = need;
-      var frames = [start];
-      for (var i = 1; i <= steps; i++) frames.push((start + dir * i + 100) % 10);
-      columns.push(frames);
+  function characterLivePending(character) {
+    if (!character || !character.ok) return false;
+    var blogs = countableBlogs(character);
+    if (!blogs.length) return false;
+    for (var i = 0; i < blogs.length; i++) {
+      var data = state.blogCounts[countableBlogUrl(blogs[i].url)];
+      if (!data || data.status === "loading") return true;
     }
-    return columns;
+    return false;
   }
 
-  function reelPattern(value, width) {
-    var digits = String(Math.max(0, Math.round(value)));
-    while (digits.length < width) digits = "0" + digits;
-    var out = "";
-    for (var i = 0; i < digits.length; i++) {
-      var remain = digits.length - i;
-      if (i > 0 && remain % 3 === 0) out += ",";
-      out += digits.charAt(i);
-    }
-    return out;
+  function countSkeleton(kind) {
+    return h("span", { class: "skeleton " + kind, "aria-hidden": "true" });
   }
 
-  function ribbonDigit(frames) {
-    var digit = document.createElement("span");
-    digit.className = "odometer-digit" + (frames.length < 2 ? " is-still" : "");
-    var spacer = document.createElement("span");
-    spacer.className = "odometer-digit-spacer";
-    spacer.textContent = "8";
-    var inner = document.createElement("span");
-    inner.className = "odometer-digit-inner";
-    var ribbon = document.createElement("span");
-    ribbon.className = "odometer-ribbon";
-    var ribbonInner = document.createElement("span");
-    ribbonInner.className = "odometer-ribbon-inner";
-    for (var i = 0; i < frames.length; i++) {
-      var val = document.createElement("span");
-      val.className = "odometer-value" + (i === frames.length - 1 && frames.length > 1 ? " is-last" : "");
-      val.textContent = String(frames[i]);
-      ribbonInner.appendChild(val);
-    }
-    ribbon.appendChild(ribbonInner);
-    inner.appendChild(ribbon);
-    digit.appendChild(spacer);
-    digit.appendChild(inner);
-    return digit;
-  }
-
-  function clearReel(el) {
-    if (el._reelTimer) clearTimeout(el._reelTimer);
-    if (el._reelTimerHold) clearTimeout(el._reelTimerHold);
-    el._reelTimer = 0;
-    el._reelTimerHold = 0;
-    el._reelBusy = false;
-    el._reelCurrent = null;
-    el.classList.remove("is-up", "is-animating", "is-settled");
-    el.textContent = "—";
-  }
-
-  function freezeReel(el, value) {
-    if (el._reelTimer) clearTimeout(el._reelTimer);
-    el._reelTimer = 0;
-    el._reelBusy = false;
-    el._reelCurrent = value;
-    // 끝난 릴의 칸과 글자 위치를 그대로 둔다. 일반 텍스트로 바꾸면 너비가 흔들린다.
-    el.classList.remove("is-up");
-    el.classList.add("is-animating", "is-settled");
-  }
-
-  function paintStatic(el, value) {
-    if (el._reelTimer) clearTimeout(el._reelTimer);
-    el._reelTimer = 0;
-    el._reelBusy = false;
-    el._reelCurrent = value;
-    mountReel(el, value, digitColumns(value, value), 0);
-    el.classList.remove("is-up", "is-animating");
-    el.classList.add("is-settled");
-  }
-
-  function mountReel(el, to, columns, duration) {
-    var pattern = reelPattern(to, columns.length);
-    el.classList.remove("is-animating", "is-settled", "is-up");
-    el.classList.add("odometer");
-    el.textContent = "";
-    el.style.setProperty("--reel-time", duration + "ms");
-    var sr = document.createElement("span");
-    sr.className = "sr-only";
-    sr.textContent = formatNumber(to);
-    var inside = document.createElement("span");
-    inside.className = "odometer-inside";
-    inside.setAttribute("aria-hidden", "true");
-    var place = 0;
-    for (var i = 0; i < pattern.length; i++) {
-      var ch = pattern.charAt(i);
-      if (ch >= "0" && ch <= "9") {
-        inside.appendChild(ribbonDigit(columns[place]));
-        place++;
-      } else {
-        var mark = document.createElement("span");
-        mark.className = "odometer-formatting-mark";
-        mark.textContent = ch;
-        inside.appendChild(mark);
-      }
-    }
-    el.appendChild(sr);
-    el.appendChild(inside);
-  }
-
-  function playSlide(el, from, to) {
-    var columns = digitColumns(from, to);
-    var dist = Math.abs(to - from);
-    var duration = Math.min(
-      COUNT_UP_MAX_MS,
-      Math.max(COUNT_UP_MIN_MS, Math.round(COUNT_UP_BASE_MS + Math.sqrt(dist) * COUNT_UP_SCALE))
+  function paintPendingValue(el, kind) {
+    if (!el) return;
+    el.setAttribute("aria-busy", "true");
+    el.replaceChildren(
+      h("span", { class: "sr-only", text: "집계 중" }),
+      countSkeleton(kind)
     );
-    if (el._reelTimer) clearTimeout(el._reelTimer);
-    el._reelBusy = true;
-    el._reelTarget = to;
-    mountReel(el, to, columns, duration);
-    var settled = false;
-    function finish() {
-      if (settled) return;
-      settled = true;
-      el.removeEventListener("transitionend", onEnd);
-      if (!el.isConnected) {
-        el._reelBusy = false;
+  }
+
+  // 스켈레톤에서 처음 숫자가 나오거나, 이미 보이던 릴의 값이 바뀔 때만 올린다.
+  function paintCountInstant(host, reel) {
+    if (!state.countsShown) return false;
+    if (reel && typeof reel._reelCurrent === "number") return false;
+    if (!host) return true;
+    if (host.getAttribute("aria-busy") === "true" || host.querySelector(".skeleton")) return false;
+    var nested = host.querySelector(".odometer");
+    if (nested && typeof nested._reelCurrent === "number") return false;
+    return true;
+  }
+
+  function showHostedCount(parent, value, prefix) {
+    setHostedOdometer(parent, value, prefix, paintCountInstant(parent));
+  }
+
+  function showReel(reel, value, host) {
+    setOdometer(reel, value, paintCountInstant(host, reel));
+  }
+
+  function markCountsShown() {
+    if (!countsPending()) state.countsShown = true;
+  }
+
+  // 스켈레톤이 숫자로 바뀌는 순간만 짧게 페이드한다. 이후 갱신은 그대로 둔다.
+  function fadeCount(el) {
+    if (!el || reducedMotion) return;
+    if (el.getAttribute("aria-busy") !== "true" && !el.querySelector(".skeleton")) return;
+    playCountFade(el);
+  }
+
+  // 끝난 페이드 클래스를 남겨 두면, 카드를 옮길 때 애니메이션이 다시 시작된다.
+  function finishFade(el, className) {
+    var token = (el._fadeToken || 0) + 1;
+    el._fadeToken = token;
+    function clear(event) {
+      if (el._fadeToken !== token) {
+        el.removeEventListener("animationend", clear);
         return;
       }
-      freezeReel(el, to);
-      // 올라가는 도중에 더 큰 값이 오면, 끝난 자리에서 그 값으로 한 번 더 올린다.
-      if (typeof el._reelWant === "number" && el._reelWant !== to) commitReel(el, el._reelWant);
+      if (event.target !== el || event.animationName !== "count-in") return;
+      el.removeEventListener("animationend", clear);
+      el.classList.remove(className);
     }
-    function onEnd(event) {
-      if (!event.target.classList || !event.target.classList.contains("odometer-ribbon-inner")) return;
-      if (event.propertyName && event.propertyName.indexOf("transform") === -1) return;
-      finish();
+    el.addEventListener("animationend", clear);
+  }
+
+  function clearFadeMarks(root) {
+    if (!root) return;
+    var nodes = [root];
+    if (root.querySelectorAll) {
+      root.querySelectorAll(".is-count-in, .is-fade-in").forEach(function (el) { nodes.push(el); });
     }
-    el.addEventListener("transitionend", onEnd);
-    el._reelTimer = setTimeout(finish, duration + 120);
-    requestAnimationFrame(function () {
-      if (!el.isConnected || settled) return;
-      el.classList.add("is-up");
-      void el.offsetHeight;
-      requestAnimationFrame(function () {
-        if (!el.isConnected || settled) return;
-        el.classList.add("is-animating");
-      });
+    nodes.forEach(function (el) {
+      if (!el.classList) return;
+      if (!el.classList.contains("is-count-in") && !el.classList.contains("is-fade-in")) return;
+      el._fadeToken = (el._fadeToken || 0) + 1;
+      el.classList.remove("is-count-in", "is-fade-in");
     });
   }
 
-  function commitReel(el, value) {
-    if (!el) return;
-    if (value == null || !isFinite(Number(value))) {
-      clearReel(el);
-      return;
-    }
-    value = Math.max(0, Math.round(Number(value)));
-    // 카드가 문서에 붙기 전에 만들어져도 숫자를 그린다. 붙기 전에 건너뛰면 빈 칸으로 남는다.
-    if (el._reelBusy) {
-      el._reelWant = value;
-      return;
-    }
-    var current = typeof el._reelCurrent === "number" ? el._reelCurrent : 0;
-    if (current === value && el.classList.contains("is-settled")) return;
-    if (reducedMotion || current === value) {
-      paintStatic(el, value);
-      return;
-    }
-    playSlide(el, current, value);
+  function playCountFade(el) {
+    if (!el || reducedMotion) return;
+    el.classList.remove("is-count-in");
+    void el.offsetWidth;
+    finishFade(el, "is-count-in");
+    el.classList.add("is-count-in");
   }
 
-  function whenCountsSettle(el, run) {
-    if (!countsPending()) {
-      run();
-      return;
-    }
-    if (el._reelTimerHold) return;
-    el._reelTimerHold = setTimeout(function tick() {
-      el._reelTimerHold = 0;
-      if (!el.isConnected) return;
-      if (countsPending()) {
-        whenCountsSettle(el, run);
-        return;
-      }
-      run();
-    }, 40);
+  // 스켈레톤 카드가 실제 카드로 바뀌는 첫 순간만 칸 전체를 페이드한다.
+  function fadeIn(el) {
+    if (!el || reducedMotion) return;
+    el.classList.remove("is-fade-in");
+    void el.offsetWidth;
+    finishFade(el, "is-fade-in");
+    el.classList.add("is-fade-in");
   }
-
-  function setOdometer(el, value) {
-    if (!el) return;
-    el._reelWant = value == null || !isFinite(Number(value)) ? null : Math.max(0, Math.round(Number(value)));
-    whenCountsSettle(el, function () {
-      commitReel(el, el._reelWant);
-    });
-  }
-
-  function setHostedOdometer(parent, value, prefix) {
-    if (!parent) return;
-    var label = prefix || "";
-    var numeric = value == null || !isFinite(Number(value)) ? null : Math.max(0, Math.round(Number(value)));
-    // 집계가 끝나는 순간의 값이 이전이 아니라 최종 합계가 되도록 항상 갱신한다.
-    parent._countValue = numeric;
-    parent._countPrefix = label;
-    if (countsPending()) {
-      whenCountsSettle(parent, function () {
-        if (!parent.isConnected) return;
-        setHostedOdometer(parent, parent._countValue, parent._countPrefix);
-      });
-      return;
-    }
-    var reel = null;
-    var prefixNode = null;
-    for (var i = 0; i < parent.children.length; i++) {
-      if (parent.children[i].classList.contains("odometer")) reel = parent.children[i];
-      if (parent.children[i].classList.contains("odometer-prefix")) prefixNode = parent.children[i];
-    }
-    if (!reel || (label && (!prefixNode || prefixNode.textContent !== label))) {
-      parent.textContent = "";
-      if (label) {
-        prefixNode = document.createElement("span");
-        prefixNode.className = "odometer-prefix";
-        prefixNode.textContent = label;
-        parent.appendChild(prefixNode);
-      }
-      reel = document.createElement("span");
-      reel.className = "odometer";
-      parent.appendChild(reel);
-    }
-    setOdometer(reel, numeric);
-  }
-
   function formatWhen(value) {
     var date = value instanceof Date ? value : new Date(value);
     if (isNaN(date.getTime())) return "";
@@ -794,16 +601,249 @@
     return sources;
   }
 
-  function avatarNode(character, className) {
+  var thumbDbPromise = null;
+
+  function isProfileThumb(url) {
+    return typeof url === "string" && url.indexOf("profile.php?") === 0;
+  }
+
+  function openThumbDb() {
+    if (thumbDbPromise) return thumbDbPromise;
+    thumbDbPromise = new Promise(function (resolve) {
+      if (!window.indexedDB) {
+        resolve(null);
+        return;
+      }
+      var req;
+      try { req = indexedDB.open("botdash-thumbs", 1); }
+      catch (error) {
+        resolve(null);
+        return;
+      }
+      req.onupgradeneeded = function () {
+        var db = req.result;
+        if (!db.objectStoreNames.contains("thumbs")) db.createObjectStore("thumbs");
+      };
+      req.onsuccess = function () { resolve(req.result); };
+      req.onerror = function () { resolve(null); };
+    });
+    return thumbDbPromise;
+  }
+
+  function readThumbRecords(keys) {
+    return openThumbDb().then(function (db) {
+      if (!db || !keys.length) return {};
+      return new Promise(function (resolve) {
+        var out = {};
+        var tx;
+        try { tx = db.transaction("thumbs", "readonly"); }
+        catch (error) {
+          resolve(out);
+          return;
+        }
+        var store = tx.objectStore("thumbs");
+        keys.forEach(function (key) {
+          var req = store.get(key);
+          req.onsuccess = function () {
+            var row = req.result;
+            if (row && row.blob instanceof Blob && String(row.blob.type || "").indexOf("image/") === 0) out[key] = row;
+          };
+        });
+        tx.oncomplete = function () { resolve(out); };
+        tx.onerror = function () { resolve(out); };
+        tx.onabort = function () { resolve(out); };
+      });
+    });
+  }
+
+  function writeThumbRecord(key, blob, savedAt) {
+    openThumbDb().then(function (db) {
+      if (!db) return;
+      try {
+        db.transaction("thumbs", "readwrite").objectStore("thumbs").put({ blob: blob, savedAt: savedAt }, key);
+      } catch (error) {}
+    });
+  }
+
+  function warmThumbs(keys) {
+    var missing = [];
+    keys.forEach(function (key) {
+      if (!isProfileThumb(key) || state.thumbs[key]) return;
+      missing.push(key);
+    });
+    if (!missing.length) return Promise.resolve();
+    return readThumbRecords(missing).then(function (rows) {
+      Object.keys(rows).forEach(function (key) {
+        if (state.thumbs[key]) return;
+        state.thumbs[key] = {
+          url: URL.createObjectURL(rows[key].blob),
+          savedAt: rows[key].savedAt || 0,
+          size: rows[key].blob.size || 0
+        };
+      });
+    }).catch(function () {});
+  }
+
+  function thumbKeysFor(characters) {
+    var keys = [];
+    var seen = {};
+    characters.forEach(function (character) {
+      blogPhotoSources(character).forEach(function (source) {
+        if (!isProfileThumb(source.thumb) || seen[source.thumb]) return;
+        seen[source.thumb] = true;
+        keys.push(source.thumb);
+      });
+    });
+    return keys;
+  }
+
+  function rememberThumb(key, blob) {
+    if (!isProfileThumb(key) || !blob || String(blob.type || "").indexOf("image/") !== 0) return null;
+    var prev = state.thumbs[key];
+    var url = URL.createObjectURL(blob);
+    state.thumbs[key] = { url: url, savedAt: Date.now(), size: blob.size || 0 };
+    writeThumbRecord(key, blob, state.thumbs[key].savedAt);
+    return { url: url, prev: prev && prev.url !== url ? prev.url : "" };
+  }
+
+  function imageBlob(response) {
+    var type = (response.headers.get("Content-Type") || "").split(";")[0].trim().toLowerCase();
+    if (type.indexOf("image/") !== 0) return Promise.resolve(null);
+    return response.blob().then(function (blob) {
+      if (!blob) return null;
+      if (String(blob.type || "").indexOf("image/") === 0) return blob;
+      return new Blob([blob], { type: type });
+    });
+  }
+
+  function releaseThumbUrl(url) {
+    if (!url || url.indexOf("blob:") !== 0) return;
+    var used = false;
+    document.querySelectorAll("img").forEach(function (img) {
+      if (img.src === url) used = true;
+    });
+    if (!used) URL.revokeObjectURL(url);
+  }
+
+  // 화면에 그린 사진을 썸네일로 남긴다. 한 시간 안이면 다시 받지 않는다.
+  function archiveThumb(key) {
+    if (!isProfileThumb(key)) return;
+    var row = state.thumbs[key];
+    if (row && Date.now() - row.savedAt < THUMB_REFRESH_MS) return;
+    if (state.thumbArchive[key]) return;
+    state.thumbArchive[key] = true;
+    fetch(key, { credentials: "same-origin", cache: "force-cache" }).then(function (response) {
+      if (!response.ok) return null;
+      return imageBlob(response);
+    }).then(function (blob) {
+      state.thumbArchive[key] = false;
+      if (!blob) return;
+      var saved = rememberThumb(key, blob);
+      if (saved) releaseThumbUrl(saved.prev);
+    }).catch(function () {
+      state.thumbArchive[key] = false;
+    });
+  }
+
+  // 저장분이 오래되면 보이던 사진을 유지한 채 뒤에서 받고, 모이면 같이 바꾼다.
+  // 쿠키가 만료돼 401이면 저장분을 지우지 않는다.
+  function refreshThumbs() {
+    var gen = state.thumbRefreshGen + 1;
+    state.thumbRefreshGen = gen;
+    var keys = [];
+    var seen = {};
+    document.querySelectorAll("img[data-thumb-key]").forEach(function (img) {
+      var key = img.getAttribute("data-thumb-key");
+      if (!isProfileThumb(key) || seen[key]) return;
+      seen[key] = true;
+      if (!state.thumbs[key]) return;
+      keys.push(key);
+    });
+    if (!keys.length) return;
+    Promise.all(keys.map(function (key) {
+      return fetch(key, { credentials: "same-origin", cache: "default" }).then(function (response) {
+        if (response.status === 401) return { key: key, expired: true };
+        if (!response.ok) return { key: key };
+        return imageBlob(response).then(function (blob) { return { key: key, blob: blob }; });
+      }).catch(function () { return { key: key }; });
+    })).then(function (results) {
+      if (gen !== state.thumbRefreshGen) return;
+      var expired = false;
+      results.forEach(function (row) { if (row.expired) expired = true; });
+      if (expired) return;
+      var prevs = [];
+      results.forEach(function (row) {
+        if (!row.blob) return;
+        var current = state.thumbs[row.key];
+        if (current && current.size && current.size === row.blob.size) {
+          current.savedAt = Date.now();
+          writeThumbRecord(row.key, row.blob, current.savedAt);
+          return;
+        }
+        var saved = rememberThumb(row.key, row.blob);
+        if (!saved) return;
+        if (saved.prev) prevs.push(saved.prev);
+        document.querySelectorAll("img[data-thumb-key]").forEach(function (img) {
+          if (img.getAttribute("data-thumb-key") !== row.key) return;
+          img.src = saved.url;
+        });
+      });
+      prevs.forEach(releaseThumbUrl);
+    });
+  }
+
+  // 같은 화면의 프로필 사진은 다 끝나면 같이 연다. 숫자 집계와는 따로다.
+  function createAvatarBatch() {
+    var nodes = [];
+    var pending = 0;
+    var closed = false;
+    function reveal() {
+      if (!closed || pending > 0) return;
+      nodes.forEach(function (node) {
+        node.classList.remove("is-pending");
+        node.removeAttribute("aria-busy");
+      });
+    }
+    return {
+      watch: function (node) {
+        nodes.push(node);
+        node.classList.add("is-pending");
+        node.setAttribute("aria-busy", "true");
+        pending += 1;
+        var settled = false;
+        return {
+          done: function () {
+            if (settled) return;
+            settled = true;
+            pending -= 1;
+            reveal();
+          },
+          swap: function (next) {
+            var index = nodes.indexOf(node);
+            if (index >= 0) nodes[index] = next;
+            next.classList.add("is-pending");
+            next.setAttribute("aria-busy", "true");
+            node.classList.remove("is-pending");
+            node.removeAttribute("aria-busy");
+          }
+        };
+      },
+      close: function () {
+        closed = true;
+        reveal();
+      }
+    };
+  }
+
+  function avatarNode(character, className, batch, savedBatch) {
     var sources = blogPhotoSources(character);
     var local = character.image ? resolveImage(character.image) : "";
     if (local && local !== DASHBOARD_CONFIG.defaultImage) sources.push({ thumb: local, large: local });
     var first = sources[0];
     var fallback = DASHBOARD_CONFIG.defaultImage;
+    var saved = first && isProfileThumb(first.thumb) ? state.thumbs[first.thumb] : null;
     var img = h("img", {
       class: className || "avatar",
-      src: first ? first.thumb : fallback,
-      "data-photo": first ? first.large : fallback,
       alt: "",
       width: "64",
       height: "64"
@@ -813,31 +853,61 @@
       class: "avatar-btn",
       "aria-label": (character.name || "캐릭터") + " 프로필 크게 보기"
     }, img);
+    var group = saved && saved.url ? savedBatch : batch;
+    var ownBatch = !group;
+    if (ownBatch) group = createAvatarBatch();
+    var slot = group.watch(button);
     var index = 0;
-    img.addEventListener("error", function onError() {
-      index += 1;
-      if (index < sources.length) {
-        img.src = sources[index].thumb;
-        img.setAttribute("data-photo", sources[index].large);
-        return;
-      }
-      if (img.dataset.fallback === "1") {
-        img.removeEventListener("error", onError);
-        var mark = h("span", { class: (className || "avatar") + " avatar-fallback", "aria-hidden": "true" }, icon("fa-solid fa-user"));
-        button.replaceWith(mark);
-        return;
-      }
-      img.dataset.fallback = "1";
-      img.setAttribute("data-photo", fallback);
-      img.src = fallback;
-    });
+    function finish() {
+      slot.done();
+      var key = img.getAttribute("data-thumb-key");
+      if (key && (img.currentSrc || img.src).indexOf("profile.php?") !== -1) archiveThumb(key);
+    }
+    if (first) img.setAttribute("data-photo", first.large);
+    else img.setAttribute("data-photo", fallback);
+    if (saved && saved.url) {
+      img.setAttribute("data-thumb-key", first.thumb);
+      img.addEventListener("load", function () { slot.done(); });
+      img.addEventListener("error", function () { slot.done(); });
+      img.src = saved.url;
+      if (img.complete && img.naturalWidth > 0) slot.done();
+    } else {
+      if (first && isProfileThumb(first.thumb)) img.setAttribute("data-thumb-key", first.thumb);
+      img.addEventListener("load", finish);
+      img.addEventListener("error", function onError() {
+        index += 1;
+        if (index < sources.length) {
+          img.src = sources[index].thumb;
+          img.setAttribute("data-photo", sources[index].large);
+          if (isProfileThumb(sources[index].thumb)) img.setAttribute("data-thumb-key", sources[index].thumb);
+          else img.removeAttribute("data-thumb-key");
+          return;
+        }
+        if (img.dataset.fallback === "1") {
+          img.removeEventListener("error", onError);
+          var mark = h("span", { class: (className || "avatar") + " avatar-fallback", "aria-hidden": "true" }, icon("fa-solid fa-user"));
+          button.replaceWith(mark);
+          slot.swap(mark);
+          slot.done();
+          return;
+        }
+        img.dataset.fallback = "1";
+        img.removeAttribute("data-thumb-key");
+        img.setAttribute("data-photo", fallback);
+        img.src = fallback;
+      });
+      img.src = first ? first.thumb : fallback;
+      if (img.complete && img.naturalWidth > 0) finish();
+    }
     button.addEventListener("click", function (event) {
       event.preventDefault();
       event.stopPropagation();
+      if (button.classList.contains("is-pending")) return;
       var current = button.querySelector("img");
       if (!current) return;
       openPhoto(character, current);
     });
+    if (ownBatch) group.close();
     return button;
   }
 
@@ -947,9 +1017,31 @@
     return "idle";
   }
 
-  function deltaNode(character) {
+  function paintDelta(node, character) {
+    if (character.yesterdayVisitors == null) {
+      node.hidden = true;
+      node.className = "delta";
+      node.replaceChildren();
+      return;
+    }
+    if (characterLivePending(character)) {
+      node.hidden = false;
+      node.className = "delta is-loading";
+      node.replaceChildren(
+        h("span", { class: "sr-only", text: "집계 중" }),
+        countSkeleton("sk-delta")
+      );
+      return;
+    }
+    fadeCount(node);
     var info = deltaInfo(character);
-    if (!info) return null;
+    if (!info) {
+      node.hidden = true;
+      node.className = "delta";
+      node.replaceChildren();
+      return;
+    }
+    node.hidden = false;
     var cls = "delta is-" + info.direction + (info.big ? " is-big" : "");
     var label = info.direction === "up" ? "증가" : info.direction === "down" ? "감소" : "변동 없음";
     var iconClass = info.direction === "up" ? "fa-solid fa-arrow-trend-up" : info.direction === "down" ? "fa-solid fa-arrow-trend-down" : "fa-solid fa-minus";
@@ -958,12 +1050,22 @@
     var sr = "어제보다 " + absText + "명 " + label;
     if (info.rate != null) sr += ", " + Math.round(info.rate * 100) + "퍼센트";
     if (info.big) sr += ". 전일 대비 크게 감소";
-    return h("p", { class: cls },
+    node.className = cls;
+    node.replaceChildren(
       icon(iconClass),
       h("span", { text: absText + percent }),
       h("span", { class: "sr-only", text: sr }),
       h("span", { class: "delta-base", text: "어제 " + formatNumber(character.yesterdayVisitors) })
     );
+  }
+
+  function deltaNode(character) {
+    // 어제 값이 없으면 집계 뒤에 줄이 사라지며 칸 높이가 바뀐다. 그 줄은 처음부터 두지 않는다.
+    if (character.yesterdayVisitors == null) return null;
+    if (!characterLivePending(character) && !deltaInfo(character)) return null;
+    var node = h("p", { "data-delta": character.id });
+    paintDelta(node, character);
+    return node;
   }
 
   function accountPairs(character) {
@@ -1059,19 +1161,17 @@
       host.appendChild(plus);
     }
     plus.title = "오늘 올라온 " + label + " " + formatNumber(today);
-    setOdometer(plus.querySelector(".odometer"), today);
+    showReel(plus.querySelector(".odometer"), today, host);
   }
 
   function fillBlogCounts(el, url) {
     var key = countableBlogUrl(url);
     var data = key ? state.blogCounts[key] : null;
     var activity = el.getAttribute("data-counts-mode") === "activity";
-    var loading = !!(key && (!data || data.status === "loading"));
+    var loading = !!(key && (countsBlockPaint() || !data || data.status === "loading"));
     el.classList.toggle("is-loading", loading);
-    if (loading) {
-      el.textContent = "집계 중";
-      return;
-    }
+    if (loading) el.setAttribute("aria-busy", "true");
+    else el.removeAttribute("aria-busy");
     Array.prototype.slice.call(el.childNodes).forEach(function (node) {
       if (node.nodeType === 3) node.remove();
     });
@@ -1107,6 +1207,12 @@
         span.appendChild(pair);
         el.appendChild(span);
       }
+      if (loading) {
+        paintTodayPlus(span, 0, item.label);
+        var loadingPair = span.querySelector(".count-pair");
+        if (loadingPair) loadingPair.replaceChildren(countSkeleton("sk-count"));
+        return;
+      }
       // 총 6개 중 오늘 2개면 6이 아니라 4+2. 오늘 수가 없거나 총수보다 크면 총수만 보여 준다.
       var showPlus = (item.label === "글" || item.label === "댓글")
         && typeof item.value === "number"
@@ -1115,7 +1221,27 @@
         && item.today <= item.value;
       span.removeAttribute("title");
       paintTodayPlus(span, showPlus ? item.today : 0, item.label);
-      setOdometer(span.querySelector(".count-pair > .odometer"), showPlus ? item.value - item.today : item.value);
+      var pair = span.querySelector(".count-pair");
+      if (pair) fadeCount(pair);
+      // +오늘 칸에도 odometer 가 있다. 쌍의 직계 자식만 본 숫자로 본다.
+      var reel = null;
+      if (pair) {
+        for (var reelIndex = 0; reelIndex < pair.children.length; reelIndex++) {
+          if (pair.children[reelIndex].classList.contains("odometer")) {
+            reel = pair.children[reelIndex];
+            break;
+          }
+        }
+      }
+      if (pair && !reel) {
+        for (var skIndex = pair.children.length - 1; skIndex >= 0; skIndex--) {
+          if (pair.children[skIndex].classList.contains("skeleton")) pair.children[skIndex].remove();
+        }
+        reel = document.createElement("span");
+        reel.className = "odometer";
+        pair.insertBefore(reel, pair.firstChild);
+      }
+      showReel(reel, showPlus ? item.value - item.today : item.value, pair);
     });
     Array.prototype.slice.call(el.children).forEach(function (child) {
       var label = child.getAttribute("data-count-label");
@@ -1177,7 +1303,7 @@
       applyLiveCounts(null);
     }
     keys.forEach(function (key) {
-      fetch("profile.php?view=counts&blog=" + encodeURIComponent(key), { headers: { "Accept": "application/json" } })
+      fetchCounts(key, "reload")
         .then(function (response) {
           if (!response.ok) throw new Error("counts");
           return response.json();
@@ -1231,9 +1357,37 @@
     button._spinTimer = setTimeout(release, 700);
   }
 
+  // 로컬 시각 기준 다음 10분 경계까지 남은 시간. 정각이면 다음 경계(10분 뒤)를 가리킨다.
+  function msUntilNextCountRefresh(now) {
+    var date = new Date(now);
+    var intoSlot = (date.getMinutes() % 10) * 60000 + date.getSeconds() * 1000 + date.getMilliseconds();
+    if (!intoSlot) return COUNT_REFRESH_MS;
+    return COUNT_REFRESH_MS - intoSlot;
+  }
+
+  function armCountRefresh(skipIfClose) {
+    var wait = msUntilNextCountRefresh(Date.now());
+    // 경계보다 조금 일찍 깨어나면 같은 슬롯을 바로 한 번 더 치지 않게 다음 경계로 넘긴다.
+    if (skipIfClose && wait < 1500) wait += COUNT_REFRESH_MS;
+    state.countTimer = setTimeout(function () {
+      state.countTimer = 0;
+      refreshLiveCounts();
+      armCountRefresh(true);
+    }, wait);
+  }
+
   function startCountWatch() {
     if (state.countTimer) return;
-    state.countTimer = setInterval(refreshLiveCounts, COUNT_REFRESH_MS);
+    armCountRefresh(false);
+  }
+
+  // 첫 조회는 서버가 준 10분 캐시를 쓴다. 정각 갱신만 서버를 다시 치고 그 결과를 캐시에 넣는다.
+  function fetchCounts(key, cacheMode) {
+    return fetch("profile.php?view=counts&blog=" + encodeURIComponent(key), {
+      credentials: "same-origin",
+      cache: cacheMode || "default",
+      headers: { "Accept": "application/json" }
+    });
   }
 
   function requestBlogCounts() {
@@ -1246,17 +1400,20 @@
         pending.push(key);
       });
     });
+    var gen = state.countRefreshGen;
     pending.forEach(function (key) {
-      fetch("profile.php?view=counts&blog=" + encodeURIComponent(key), { headers: { "Accept": "application/json" } })
+      fetchCounts(key, "default")
         .then(function (response) {
           if (!response.ok) throw new Error("counts");
           return response.json();
         })
         .then(function (data) {
+          if (gen !== state.countRefreshGen) return;
           applyCountPayload(key, data);
           applyLiveCounts(key);
         })
         .catch(function () {
+          if (gen !== state.countRefreshGen) return;
           state.blogCounts[key] = { status: "fail" };
           applyLiveCounts(key);
         });
@@ -1285,18 +1442,34 @@
   function applyVisitorBlog(block, url) {
     var key = countableBlogUrl(url);
     var data = key ? state.blogCounts[key] : null;
-    var loading = !!(key && (!data || data.status === "loading"));
+    var loading = !!(key && (countsBlockPaint() || !data || data.status === "loading"));
     var today = data && data.status === "ok" ? data.today : null;
     var total = data && data.status === "ok" ? data.total : null;
     var num = block.querySelector("[data-blog-today]");
     var totalEl = block.querySelector("[data-blog-total]");
+    block.setAttribute("aria-busy", loading ? "true" : "false");
     if (num) {
-      if (loading) num.textContent = "…";
-      else setHostedOdometer(num, today);
+      if (loading) paintPendingValue(num, "sk-visitor");
+      else {
+        fadeCount(num);
+        num.removeAttribute("aria-busy");
+        showHostedCount(num, today);
+      }
     }
     if (totalEl) {
-      if (loading) totalEl.textContent = "전체 …";
-      else setHostedOdometer(totalEl, total, "전체 ");
+      if (loading) {
+        totalEl.setAttribute("aria-busy", "true");
+        totalEl.replaceChildren(
+          h("span", { class: "odometer-prefix", text: "전체 " }),
+          h("span", { class: "sr-only", text: "집계 중" }),
+          countSkeleton("sk-total")
+        );
+      } else {
+        var revealTotal = totalEl.getAttribute("aria-busy") === "true" || !!totalEl.querySelector(".skeleton");
+        totalEl.removeAttribute("aria-busy");
+        showHostedCount(totalEl, total, "전체 ");
+        if (revealTotal) playCountFade(totalEl.querySelector(".odometer"));
+      }
     }
     ["unknown", "zero", "low", "mid", "high"].forEach(function (name) {
       block.classList.remove("is-" + name);
@@ -1395,17 +1568,18 @@
     );
   }
 
-  function renderCard(character) {
+  function renderCard(character, batch, savedBatch) {
     if (!character.ok) return renderErrorCard(character);
-    var level = visitorLevel(character.todayVisitors);
+    var pendingCard = characterLivePending(character);
+    var level = pendingCard ? "unknown" : visitorLevel(character.todayVisitors);
     var classes = ["card", "is-" + level];
-    if (isBigDrop(character)) classes.push("is-drop");
+    if (!pendingCard && isBigDrop(character)) classes.push("is-drop");
     return h("article", { class: classes.join(" "), "data-character": character.id },
       h("div", { class: "meter", "aria-hidden": "true" }, h("span")),
       detailLink(character.id, character.name + " 상세 페이지"),
       h("div", { class: "card-body" },
         h("div", { class: "card-head" },
-          avatarNode(character),
+          avatarNode(character, "avatar", batch, savedBatch),
           h("div", { class: "card-id" },
             h("h2", { class: "card-name", text: character.name }),
             character.nickname ? h("p", { class: "card-nick", text: character.nickname }) : null,
@@ -1420,21 +1594,49 @@
     );
   }
 
-  function showSkeleton() {
-    var grid = document.getElementById("cardGrid");
-    if (!grid) return;
-    grid.replaceChildren();
-    grid.setAttribute("aria-busy", "true");
-    for (var i = 0; i < 6; i++) {
-      grid.appendChild(h("article", { class: "card skeleton-card", "aria-hidden": "true" },
-        h("div", { class: "skeleton sk-avatar" }),
-        h("div", { class: "skeleton sk-line" }),
-        h("div", { class: "skeleton sk-num" }),
-        h("div", { class: "skeleton sk-line short" })
-      ));
+  function paintShellPlaceholders() {
+    ["statVisitors", "statTotal"].forEach(function (id) {
+      paintPendingValue(document.getElementById(id), "sk-metric-num");
+    });
+    ["count-all", "count-has", "count-zero"].forEach(function (id) {
+      paintPendingValue(document.getElementById(id), "sk-count");
+    });
+  }
+
+  function paintLivePlaceholders() {
+    paintPendingValue(document.getElementById("statVisitors"), "sk-metric-num");
+    paintPendingValue(document.getElementById("statTotal"), "sk-metric-num");
+    ["count-has", "count-zero"].forEach(function (id) {
+      paintPendingValue(document.getElementById(id), "sk-count");
+    });
+    document.querySelectorAll("[data-visitor-blog]").forEach(function (block) {
+      applyVisitorBlog(block, block.getAttribute("data-visitor-blog"));
+    });
+    document.querySelectorAll("[data-blog-counts]").forEach(function (el) {
+      fillBlogCounts(el, el.getAttribute("data-blog-counts"));
+    });
+    document.querySelectorAll("[data-stat-today]").forEach(function (el) {
+      var character = findById(el.getAttribute("data-stat-today"));
+      if (character && characterLivePending(character)) paintPendingValue(el, "sk-visitor");
+    });
+    document.querySelectorAll("[data-stat-total]").forEach(function (el) {
+      var character = findById(el.getAttribute("data-stat-total"));
+      if (character && characterLivePending(character)) paintPendingValue(el, "sk-total");
+    });
+    document.querySelectorAll("[data-delta]").forEach(function (node) {
+      var character = findById(node.getAttribute("data-delta"));
+      if (character) paintDelta(node, character);
+    });
+    document.querySelectorAll("article.card[data-character]").forEach(function (card) {
+      var character = findById(card.getAttribute("data-character"));
+      if (!character || !characterLivePending(character)) return;
+      card.classList.remove("is-zero", "is-low", "is-mid", "is-high", "is-drop");
+      card.classList.add("is-unknown");
+    });
+    if (state.view === "stats") {
+      renderStatsTable();
+      holdChart();
     }
-    var empty = document.getElementById("emptyState");
-    if (empty) empty.hidden = true;
   }
 
   function renderNotice() {
@@ -1456,8 +1658,23 @@
     var visitors = document.getElementById("statVisitors");
     var totalVisitors = document.getElementById("statTotal");
     if (count) count.textContent = String(ok.length);
-    if (visitors) setHostedOdometer(visitors, summedVisitors(ok, "todayVisitors"));
-    if (totalVisitors) setHostedOdometer(totalVisitors, summedVisitors(ok, "totalVisitors"));
+    var figuresWait = !state.ready || countsBlockPaint();
+    if (visitors) {
+      if (figuresWait) paintPendingValue(visitors, "sk-metric-num");
+      else {
+        fadeCount(visitors);
+        visitors.removeAttribute("aria-busy");
+        showHostedCount(visitors, summedVisitors(ok, "todayVisitors"));
+      }
+    }
+    if (totalVisitors) {
+      if (figuresWait) paintPendingValue(totalVisitors, "sk-metric-num");
+      else {
+        fadeCount(totalVisitors);
+        totalVisitors.removeAttribute("aria-busy");
+        showHostedCount(totalVisitors, summedVisitors(ok, "totalVisitors"));
+      }
+    }
     var errorEl = document.getElementById("statErrors");
     if (errorEl) {
       errorEl.hidden = !errors;
@@ -1487,9 +1704,17 @@
       has: matched.filter(function (row) { return row.ok && row.todayVisitors > 0; }).length,
       zero: matched.filter(function (row) { return row.ok && row.todayVisitors === 0; }).length
     };
+    var wait = countsBlockPaint();
     Object.keys(counts).forEach(function (key) {
       var el = document.getElementById("count-" + key);
-      if (el) el.textContent = String(counts[key]);
+      if (!el) return;
+      if (wait && key !== "all") {
+        paintPendingValue(el, "sk-count");
+        return;
+      }
+      fadeCount(el);
+      el.removeAttribute("aria-busy");
+      el.textContent = String(counts[key]);
     });
   }
 
@@ -1514,27 +1739,188 @@
     return box;
   }
 
-  function renderGrid(list) {
+  function cardsHidden() {
+    var panel = document.getElementById("cards");
+    return !panel || panel.hidden;
+  }
+
+  function cardColumnCount() {
+    if (window.matchMedia("(min-width: 1720px)").matches) return 4;
+    if (window.matchMedia("(min-width: 1280px)").matches) return 3;
+    if (window.matchMedia("(min-width: 768px)").matches) return 2;
+    return 1;
+  }
+
+  // 문서 기준 위치. 스크롤이 바뀌어도 칸 이동량만 남긴다.
+  function snapshotCardPlaces(grid) {
+    var places = {};
+    if (!grid) return places;
+    grid.querySelectorAll("article.card[data-character]").forEach(function (card) {
+      var id = card.getAttribute("data-character");
+      if (!id) return;
+      var rect = card.getBoundingClientRect();
+      if (rect.width < 1 && rect.height < 1) return;
+      places[id] = {
+        left: rect.left + window.pageXOffset,
+        top: rect.top + window.pageYOffset
+      };
+    });
+    return places;
+  }
+
+  function rememberCardPlaces() {
+    if (cardsHidden()) return;
+    var grid = document.getElementById("cardGrid");
+    if (!grid) return;
+    state.cardPlaces = snapshotCardPlaces(grid);
+    state.cardColumns = cardColumnCount();
+  }
+
+  // 같은 카드를 이전 자리에서 새 자리로 미끄러뜨린다.
+  function playCardMove(grid, before) {
+    state.cardMoveGen += 1;
+    var gen = state.cardMoveGen;
+    if (!grid || !before || reducedMotion || cardsHidden()) {
+      state.cardMoving = false;
+      rememberCardPlaces();
+      return;
+    }
+    var moving = [];
+    grid.querySelectorAll("article.card[data-character]").forEach(function (card) {
+      var id = card.getAttribute("data-character");
+      var first = before[id];
+      if (!first) return;
+      var rect = card.getBoundingClientRect();
+      var dx = first.left - (rect.left + window.pageXOffset);
+      var dy = first.top - (rect.top + window.pageYOffset);
+      if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
+      card.style.transition = "none";
+      card.style.transform = "translate(" + dx.toFixed(2) + "px, " + dy.toFixed(2) + "px)";
+      moving.push(card);
+    });
+    if (!moving.length) {
+      state.cardMoving = false;
+      rememberCardPlaces();
+      return;
+    }
+    state.cardMoving = true;
+    void grid.offsetWidth;
+    requestAnimationFrame(function () {
+      if (gen !== state.cardMoveGen) return;
+      moving.forEach(function (card) {
+        card.classList.add("is-moving");
+        card.style.transition = "";
+        card.style.transform = "";
+      });
+    });
+    window.setTimeout(function () {
+      if (gen !== state.cardMoveGen) return;
+      moving.forEach(function (card) {
+        card.classList.remove("is-moving");
+        card.style.transform = "";
+        card.style.transition = "";
+      });
+      state.cardMoving = false;
+      rememberCardPlaces();
+    }, 480);
+  }
+
+  function watchCardColumns() {
+    var grid = document.getElementById("cardGrid");
+    if (!grid || typeof ResizeObserver !== "function") return;
+    state.cardColumns = cardColumnCount();
+    rememberCardPlaces();
+    var observer = new ResizeObserver(function () {
+      var next = cardColumnCount();
+      if (state.cardMoving) return;
+      if (cardsHidden()) {
+        state.cardColumns = next;
+        return;
+      }
+      if (state.cardColumns && next !== state.cardColumns && state.cardPlaces) {
+        var before = state.cardPlaces;
+        state.cardColumns = next;
+        state.cardMoving = true;
+        playCardMove(grid, before);
+        return;
+      }
+      state.cardColumns = next;
+      rememberCardPlaces();
+    });
+    observer.observe(grid);
+  }
+
+  function renderGrid(list, options) {
     var grid = document.getElementById("cardGrid");
     var empty = document.getElementById("emptyState");
     if (!grid || !empty) return;
+    var fromSkeleton = !!grid.querySelector(".skeleton-card");
+    var cardsPanel = document.getElementById("cards");
+    var revealCards = fromSkeleton && cardsPanel && !cardsPanel.hidden;
+    var before = snapshotCardPlaces(grid);
+    var existing = cardsById(grid);
+    var reuse = !(options && options.rebuildCards) && !fromSkeleton && sameCardSet(existing, list);
+    if (reuse) {
+      empty.hidden = true;
+      state.cardMoving = true;
+      clearFadeMarks(grid);
+      list.forEach(function (row) { grid.appendChild(existing[row.id]); });
+      playCardMove(grid, before);
+      return;
+    }
     if (!list.length) {
+      state.cardMoving = true;
       grid.replaceChildren();
       empty.hidden = false;
       empty.replaceChildren(buildEmpty());
+      state.cardMoving = false;
+      state.cardPlaces = {};
+      if (revealCards) fadeIn(empty);
       return;
     }
     empty.hidden = true;
+    state.cardMoving = true;
     grid.replaceChildren();
-    list.forEach(function (row) { grid.appendChild(renderCard(row)); });
+    var batch = createAvatarBatch();
+    var savedBatch = createAvatarBatch();
+    list.forEach(function (row) { grid.appendChild(renderCard(row, batch, savedBatch)); });
+    batch.close();
+    savedBatch.close();
+    if (revealCards) fadeIn(grid);
+    playCardMove(grid, before);
   }
 
-  function countText(blog) {
+  function countCell(blog, field) {
     var key = countableBlogUrl(blog.url || "");
     var data = key && state.blogCounts[key];
-    if (key && (!data || data.status === "loading")) return ["집계 중", "집계 중", "집계 중", "집계 중"];
-    if (!data || data.status !== "ok") return ["—", "—", "—", "—"];
-    return [formatNumber(data.posts), formatNumber(data.comments), formatNumber(data.today), formatNumber(data.total)];
+    var loading = !!(key && (countsBlockPaint() || !data || data.status === "loading"));
+    var td = h("td", { class: "num", "data-blog-key": key, "data-blog-field": field });
+    if (loading) {
+      td.setAttribute("aria-busy", "true");
+      td.appendChild(countSkeleton("sk-count"));
+      return td;
+    }
+    var value = data && data.status === "ok" ? data[field] : null;
+    td.textContent = formatNumber(value);
+    return td;
+  }
+
+  function paintStatsCells() {
+    document.querySelectorAll("#statsTable [data-blog-field]").forEach(function (td) {
+      var key = td.getAttribute("data-blog-key");
+      var field = td.getAttribute("data-blog-field");
+      var data = key && state.blogCounts[key];
+      var loading = !!(key && (countsBlockPaint() || !data || data.status === "loading"));
+      if (loading) {
+        td.setAttribute("aria-busy", "true");
+        td.replaceChildren(countSkeleton("sk-count"));
+        return;
+      }
+      fadeCount(td);
+      var value = data && data.status === "ok" ? data[field] : null;
+      td.removeAttribute("aria-busy");
+      td.textContent = formatNumber(value);
+    });
   }
 
   function renderStatsTable() {
@@ -1566,16 +1952,15 @@
         return;
       }
       blogs.forEach(function (blog, index) {
-        var counts = countText(blog);
         var cells = [
           h("td", null, h("span", { class: "stats-platform" },
             blog.platform || "블로그",
             blog.paused ? pausedMark() : null
           )),
-          h("td", { class: "num", text: counts[2] }),
-          h("td", { class: "num", text: counts[3] }),
-          h("td", { class: "num", text: counts[0] }),
-          h("td", { class: "num", text: counts[1] })
+          countCell(blog, "today"),
+          countCell(blog, "total"),
+          countCell(blog, "posts"),
+          countCell(blog, "comments")
         ];
         if (index === 0) body.appendChild(h("tr", null, nameCell, cells));
         else body.appendChild(h("tr", null, cells));
@@ -1585,181 +1970,37 @@
     host.replaceChildren(h("div", { class: "stats-table-wrap" }, table));
   }
 
-  function barColor(character) {
-    var level = visitorLevel(character.todayVisitors);
-    if (level === "zero") return "#6e6e80";
-    if (level === "high") return "#f5a623";
-    if (level === "mid") return "#5266eb";
-    if (level === "unknown") return "#3a3a48";
-    return "#9aa6ee";
-  }
-
-  function chartValueHost(wrap) {
-    var host = wrap.querySelector(".chart-values");
-    if (host) return host;
-    host = document.createElement("div");
-    host.className = "chart-values";
-    host.setAttribute("aria-hidden", "true");
-    wrap.appendChild(host);
-    return host;
-  }
-
-  function chartBarValue(bar, scale, finalValue) {
-    if (!finalValue) return 0;
-    var base = scale.getPixelForValue(0);
-    var target = scale.getPixelForValue(finalValue);
-    var span = base - target;
-    if (!span) return finalValue;
-    if (Math.abs(bar.y - target) < 0.6) return finalValue;
-    var raw = ((base - bar.y) / span) * finalValue;
-    if (raw < 0) raw = 0;
-    if (raw > finalValue) raw = finalValue;
-    return Math.round(raw);
-  }
-
-  function showChartCount(el, value) {
-    if (el._chartShown === value && el.querySelector(".odometer")) return;
-    el._chartShown = value;
-    var reel = el.querySelector(".odometer");
-    if (!reel) {
-      reel = document.createElement("span");
-      reel.className = "odometer";
-      el.appendChild(reel);
-    }
-    paintStatic(reel, value);
-  }
-
-  function followChartValues(chart) {
-    if (!chart || !chart.canvas || !chart.scales || !chart.scales.y) return;
-    var host = chart.canvas.parentNode.querySelector(".chart-values");
-    var rows = chart.$chartRows || [];
-    var meta = chart.getDatasetMeta(0);
-    if (!host || !meta || !meta.data) return;
-    var scale = chart.scales.y;
-    rows.forEach(function (row, index) {
-      var el = host.querySelector('[data-chart-value="' + row.id + '"]');
-      var bar = meta.data[index];
-      if (!el || !bar) return;
-      el.style.left = bar.x + "px";
-      el.style.top = bar.y + "px";
-      if (!chart.$rise) return;
-      showChartCount(el, chartBarValue(bar, scale, row.todayVisitors || 0));
-    });
-  }
-
-  function syncChartValues(chart, rows, replay, rise) {
-    var host = chartValueHost(chart.canvas.parentNode);
-    var seen = {};
-    rows.forEach(function (row) {
-      seen[row.id] = true;
-      var el = host.querySelector('[data-chart-value="' + row.id + '"]');
-      if (!el) {
-        el = document.createElement("span");
-        el.className = "chart-value";
-        el.setAttribute("data-chart-value", row.id);
-        host.appendChild(el);
-      }
-      var reel = el.querySelector(".odometer");
-      // 탭을 나갔다가 돌아오면 끝난 릴을 버리고 막대와 함께 0부터 올린다.
-      // 같은 탭에 있는 동안의 새로고침은 지금 숫자에서 이어간다.
-      if (!reel || replay || rise) {
-        var fresh = document.createElement("span");
-        fresh.className = "odometer";
-        if (reel) reel.replaceWith(fresh);
-        else el.appendChild(fresh);
-        reel = fresh;
-      }
-      el._chartShown = null;
-      if (rise) paintStatic(reel, 0);
-      else setOdometer(reel, row.todayVisitors || 0);
-    });
-    Array.prototype.slice.call(host.children).forEach(function (child) {
-      if (!seen[child.getAttribute("data-chart-value")]) child.remove();
-    });
-    chart.$chartRows = rows;
-  }
-
-  var barValuePlugin = {
-    id: "barValues",
-    afterDraw: function (chart) {
-      followChartValues(chart);
-    }
-  };
-
   function renderChart(options) {
+    window.BotDashChart.render(options);
+  }
+
+  function holdChart() {
     var wrap = document.getElementById("chartWrap");
     var empty = document.getElementById("chartEmpty");
-    var canvas = document.getElementById("visitorChart");
-    if (!wrap || !canvas) return;
-    var existed = !!state.chart;
-    var rise = !reducedMotion && (!!(options && options.rise) || !existed);
-    if (state.chart) {
+    if (empty) empty.hidden = true;
+    if (!wrap) return;
+    wrap.hidden = false;
+    wrap.classList.add("is-pending");
+    wrap.setAttribute("aria-busy", "true");
+    if (state.chart && state.chart.destroy) {
       state.chart.destroy();
       state.chart = null;
     }
-    var rows = visibleCharacters().filter(function (row) { return row.ok; });
-    if (!rows.length || typeof Chart === "undefined") {
-      wrap.hidden = true;
-      var stale = wrap.querySelector(".chart-values");
-      if (stale) stale.replaceChildren();
-      if (empty) {
-        empty.hidden = false;
-        empty.textContent = typeof Chart === "undefined" ? "Chart.js를 불러오지 못했습니다." : "그래프를 표시할 캐릭터가 없습니다.";
-      }
+  }
+
+  function showChart(options) {
+    var wrap = document.getElementById("chartWrap");
+    if (countsPending()) {
+      holdChart();
       return;
     }
-    wrap.hidden = false;
-    if (empty) empty.hidden = true;
-    try {
-      state.chart = new Chart(canvas, {
-        type: "bar",
-        plugins: [barValuePlugin],
-        data: {
-          labels: rows.map(function (row) { return row.name; }),
-          datasets: [{
-            label: "오늘 방문자",
-            data: rows.map(function (row) { return row.todayVisitors || 0; }),
-            backgroundColor: rows.map(barColor),
-            borderRadius: 8,
-            maxBarThickness: 64
-          }]
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          animation: { duration: rise ? 1000 : 0 },
-          plugins: {
-            legend: { display: false },
-            tooltip: {
-              backgroundColor: "#11111d",
-              titleColor: "#ededf3",
-              bodyColor: "#c3c3cc",
-              borderColor: "#2c2c3a",
-              borderWidth: 1,
-              callbacks: {
-                label: function (item) { return "오늘 방문자 " + formatNumber(item.parsed.y); }
-              }
-            }
-          },
-          layout: { padding: { top: 8, left: 4, right: 18 } },
-          scales: {
-            x: { ticks: { color: "#c3c3cc", maxRotation: 0, minRotation: 0, autoSkip: false, font: { size: 12 } }, grid: { display: false } },
-            y: { beginAtZero: true, grace: "22%", ticks: { color: "#9a9aa8", precision: 0 }, grid: { color: "#2c2c3a" } }
-          }
-        }
-      });
-      state.chart.$rise = rise;
-      state.chart.$chartRows = rows;
-      syncChartValues(state.chart, rows, !!(options && options.replay), rise);
-      followChartValues(state.chart);
-    } catch (error) {
-      wrap.hidden = true;
-      if (empty) {
-        empty.hidden = false;
-        empty.textContent = "그래프를 그리지 못했습니다.";
-      }
+    if (wrap) {
+      wrap.classList.remove("is-pending");
+      wrap.removeAttribute("aria-busy");
     }
+    renderChart(options);
   }
+
 
   function syncView() {
     var stats = state.view === "stats";
@@ -1809,38 +2050,58 @@
           totalKnown += 1;
         }
       });
-      if (todayKnown > 0) character.todayVisitors = todaySum;
-      if (totalKnown > 0) character.totalVisitors = totalSum;
-      character.visitorPartial = !pending && (todayKnown < blogs.length || totalKnown < blogs.length);
+      // 블로그가 남아 있으면 합이 아직 아니다. 그 칸은 스켈레톤으로 둔다.
+      if (pending) return;
+      character.todayVisitors = todayKnown > 0 ? todaySum : null;
+      character.totalVisitors = totalKnown > 0 ? totalSum : null;
+      character.visitorPartial = todayKnown < blogs.length || totalKnown < blogs.length;
     });
   }
 
   function paintVisitorFigures() {
     syncLiveVisitors();
     renderMetrics();
+    updateCounts();
     document.querySelectorAll("[data-character]").forEach(function (card) {
       var character = findById(card.getAttribute("data-character"));
       if (!character || !character.ok) return;
       card.querySelectorAll("[data-visitor-blog]").forEach(function (block) {
         applyVisitorBlog(block, block.getAttribute("data-visitor-blog"));
       });
+      var pendingCard = characterLivePending(character);
       card.classList.remove("is-unknown", "is-zero", "is-low", "is-mid", "is-high");
-      card.classList.add("is-" + visitorLevel(character.todayVisitors));
+      card.classList.add("is-" + (pendingCard ? "unknown" : visitorLevel(character.todayVisitors)));
+      card.classList.toggle("is-drop", !pendingCard && isBigDrop(character));
+    });
+    document.querySelectorAll("[data-delta]").forEach(function (node) {
+      var character = findById(node.getAttribute("data-delta"));
+      if (character) paintDelta(node, character);
     });
     document.querySelectorAll("[data-stat-today]").forEach(function (el) {
       var character = findById(el.getAttribute("data-stat-today"));
-      if (character) setHostedOdometer(el, character.todayVisitors);
+      if (!character) return;
+      if (characterLivePending(character)) paintPendingValue(el, "sk-visitor");
+      else {
+        fadeCount(el);
+        el.removeAttribute("aria-busy");
+        showHostedCount(el, character.todayVisitors);
+      }
     });
     document.querySelectorAll("[data-stat-total]").forEach(function (el) {
       var character = findById(el.getAttribute("data-stat-total"));
-      if (character) setHostedOdometer(el, character.totalVisitors);
+      if (!character) return;
+      if (characterLivePending(character)) paintPendingValue(el, "sk-total");
+      else {
+        fadeCount(el);
+        el.removeAttribute("aria-busy");
+        showHostedCount(el, character.totalVisitors);
+      }
     });
   }
 
-  // 카드 순서가 확정된 뒤에만 본문을 연다.
-  function revealDashboard(force) {
+  // 세션이 확인되면 본문을 연다. 아직 없는 숫자만 칸 스켈레톤으로 남긴다.
+  function revealDashboard() {
     if (!document.body.classList.contains("is-booting")) return;
-    if (!force && countsPending()) return;
     if (state.bootTimer) {
       clearTimeout(state.bootTimer);
       state.bootTimer = 0;
@@ -1851,65 +2112,85 @@
       scrollAfterBoot = false;
       applySavedScroll();
     }
-    if (state.view !== "stats") return;
-    requestAnimationFrame(function () {
-      if (state.chart && state.chart.resize) state.chart.resize();
-      else {
-        renderStatsTable();
-        renderChart();
-      }
+  }
+
+  // 대시보드는 모든 블로그, 상세는 그 캐릭터의 블로그가 끝나야 숫자를 연다.
+  function countsBlockPaint() {
+    if (document.body.dataset.page === "detail") {
+      var params = new URLSearchParams(location.search);
+      var character = findById(params.get("id") || "");
+      return !!(character && characterLivePending(character));
+    }
+    return countsPending();
+  }
+
+  function cardsById(grid) {
+    var byId = {};
+    grid.querySelectorAll("article.card[data-character]").forEach(function (card) {
+      byId[card.getAttribute("data-character")] = card;
     });
+    return byId;
   }
 
-  function armBootHold() {
-    if (!document.body.classList.contains("is-booting") || state.bootTimer) return;
-    state.bootTimer = setTimeout(function () {
-      state.bootTimer = 0;
-      revealDashboard(true);
-    }, 12000);
+  function sameCardSet(byId, list) {
+    var seen = 0;
+    var id;
+    for (id in byId) {
+      if (Object.prototype.hasOwnProperty.call(byId, id)) seen += 1;
+    }
+    if (seen !== list.length) return false;
+    for (var i = 0; i < list.length; i++) {
+      if (!byId[list[i].id]) return false;
+    }
+    return true;
   }
 
-  function reorderCards(list) {
-    var grid = document.getElementById("cardGrid");
-    if (!grid) return false;
+  function sameCardOrder(grid, list) {
     var cards = grid.querySelectorAll("article.card[data-character]");
     if (cards.length !== list.length) return false;
-    var have = {};
-    for (var i = 0; i < cards.length; i++) have[cards[i].getAttribute("data-character")] = cards[i];
-    for (var j = 0; j < list.length; j++) if (!have[list[j].id]) return false;
-    var frag = document.createDocumentFragment();
-    list.forEach(function (row) { frag.appendChild(have[row.id]); });
-    grid.appendChild(frag);
+    for (var i = 0; i < list.length; i++) {
+      if (cards[i].getAttribute("data-character") !== list[i].id) return false;
+    }
     return true;
   }
 
   function applyLiveCounts(key) {
     syncLiveVisitors();
-    var list = visibleCharacters();
-    var pending = countsPending();
-    // 응답이 하나씩 올 때마다 옮기면 카드가 겹쳐 보인다. 집계가 끝난 뒤 한 번만 맞춘다.
-    if (!pending && document.getElementById("cardGrid")) {
-      var current = [];
-      document.querySelectorAll("#cardGrid article.card[data-character]").forEach(function (card) {
-        current.push(card.getAttribute("data-character"));
-      });
-      if (current.join("|") !== list.map(function (row) { return row.id; }).join("|")) {
-        if (!reorderCards(list)) {
-          render();
-          return;
+    if (countsBlockPaint()) return;
+    var grid = document.getElementById("cardGrid");
+    var rebuiltStats = false;
+    if (grid) {
+      var list = visibleCharacters();
+      var byId = cardsById(grid);
+      // 보이는 캐릭터가 늘거나 줄면 칸을 다시 그린다. 순서만 바뀌면 있는 칸을 옮긴다.
+      if (!sameCardSet(byId, list)) {
+        markCountChecked();
+        render();
+        return;
+      }
+      // 저장 순서와 같으면 칸을 움직이지 않는다. 합이 바뀌어 순위가 달라질 때만 옮긴다.
+      if (!sameCardOrder(grid, list)) {
+        var beforePlaces = snapshotCardPlaces(grid);
+        state.cardMoving = true;
+        clearFadeMarks(grid);
+        list.forEach(function (character) { grid.appendChild(byId[character.id]); });
+        playCardMove(grid, beforePlaces);
+        if (state.view === "stats") {
+          renderStatsTable();
+          rebuiltStats = true;
         }
       }
     }
-    if (!pending && state.view === "stats") {
-      renderStatsTable();
-      renderChart();
+    if (state.view === "stats") {
+      if (!rebuiltStats) paintStatsCells();
+      showChart();
     }
     paintVisitorFigures();
-    paintBlogCounts(key);
-    if (!pending) {
-      markCountChecked();
-      revealDashboard();
-    }
+    paintBlogCounts(null);
+    markCountChecked();
+    markCountsShown();
+    rememberSortOrder();
+    revealDashboard();
   }
 
   function stampChars(el) {
@@ -1947,18 +2228,18 @@
 
   function render(options) {
     if (!state.ready || state.loading) return;
+    requestBlogCounts();
     syncLiveVisitors();
     renderNotice();
     renderMetrics();
     updateCounts();
     var visible = visibleCharacters();
-    renderGrid(visible);
+    renderGrid(visible, options);
     syncView();
     if (state.view === "stats") {
       renderStatsTable();
-      renderChart();
+      showChart();
     }
-    requestBlogCounts();
     var info = document.getElementById("resultInfo");
     if (info) info.textContent = "표시 중 " + visible.length + "개";
     if (options && options.refreshModal && state.modalOpen && state.activeId) {
@@ -1967,9 +2248,9 @@
       if (!current) closeModal();
       else if (body) body.replaceChildren(buildDetailView(current));
     }
-    // 방문자 수가 오기 전에 열면 기본 순서가 보였다가 다시 정렬된다.
-    if (!countsPending()) revealDashboard();
-    else armBootHold();
+    rememberSortOrder();
+    markCountsShown();
+    revealDashboard();
   }
 
   function resetView() {
@@ -2001,7 +2282,8 @@
     ].forEach(function (pair) {
       var dd = h("dd");
       if (pair[2]) dd.setAttribute(pair[2], character.id);
-      setHostedOdometer(dd, pair[1]);
+      if (characterLivePending(character)) paintPendingValue(dd, pair[2] === "data-stat-today" ? "sk-visitor" : "sk-total");
+      else setHostedOdometer(dd, pair[1]);
       grid.appendChild(h("div", null, h("dt", { text: pair[0] }), dd));
     });
     var nodes = [grid, deltaNode(character), h("h3", { text: "소개" }), h("p", { class: "intro", text: character.intro || "소개가 없습니다." })];
@@ -2363,7 +2645,7 @@
     state.blogCounts = {};
     state.loading = true;
     setLoading(true);
-    if (state.ready) showSkeleton();
+    if (state.ready) paintLivePlaceholders();
     try {
       if (typeof CharacterParser === "undefined") throw new Error("parser.js를 불러오지 못했습니다.");
       if (!Array.isArray(DASHBOARD_CONFIG.characterFiles)) throw new Error("config.js의 characterFiles 목록을 확인해 주세요.");
@@ -2378,7 +2660,9 @@
       state.ready = true;
       setLoading(false);
     }
-    render({ refreshModal: true });
+    try { await warmThumbs(thumbKeysFor(state.characters)); } catch (error) {}
+    render({ refreshModal: true, rebuildCards: true });
+    refreshThumbs();
     if (!state.entryConsumed) {
       state.entryConsumed = true;
       consumeEntry();
@@ -2425,7 +2709,9 @@
       syncView();
       if (state.view === "stats") {
         renderStatsTable();
-        renderChart(enteredStats ? { replay: true, rise: true } : null);
+        showChart(enteredStats ? { replay: true, rise: true } : null);
+      } else {
+        rememberCardPlaces();
       }
     }
     tabs.forEach(function (button, index) {
@@ -2447,6 +2733,7 @@
   function bindDashboard() {
     bindToolsToggle();
     bindViewTabs();
+    watchCardColumns();
     document.getElementById("logoutBtn").addEventListener("click", logoutUser);
     document.getElementById("refreshBtn").addEventListener("click", loadAndRender);
     var countReload = document.getElementById("countReload");
@@ -2554,6 +2841,8 @@
     }
     loadPrefs();
     bindDashboard();
+    paintShellPlaceholders();
+    revealDashboard();
     loadAndRender();
     startCountWatch();
   }
@@ -2609,6 +2898,7 @@
       if (typeof CharacterParser === "undefined") throw new Error("parser.js를 불러오지 못했습니다.");
       state.blogCounts = {};
       await loadCharacters();
+      try { await warmThumbs(thumbKeysFor(state.characters)); } catch (error) {}
       renderNotice();
       var id = new URLSearchParams(location.search).get("id");
       if (!id) {
@@ -2623,6 +2913,7 @@
       document.title = (character.ok ? character.name : "파싱 오류") + " · 봇대시";
       root.replaceChildren(buildDetailView(character, { page: true }));
       requestBlogCounts();
+      refreshThumbs();
     } catch (error) {
       root.replaceChildren(missingDetail(error.message || "데이터를 불러오지 못했습니다."));
     }

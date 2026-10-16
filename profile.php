@@ -9,15 +9,35 @@
  */
 ini_set("display_errors", "0");
 header("X-Robots-Tag: noindex, nofollow, noarchive, nosnippet");
+require_once __DIR__ . "/auth.php";
+require_once __DIR__ . "/profile_count.php";
+// 세션 기본값이 no-cache 라서 Expires·Pragma 가 남으면 브라우저가 사진과 집계를 저장하지 않는다.
+if (session_status() !== PHP_SESSION_ACTIVE) {
+    session_cache_limiter("");
+}
+if (!botdash_logged_in()) {
+    http_response_code(401);
+    header("Content-Type: text/plain; charset=utf-8");
+    header_remove("Pragma");
+    header_remove("Expires");
+    header("Cache-Control: private, no-store");
+    exit;
+}
 
 const BLOG_HTML_LIMIT = 500000;
 const IMAGE_LIMIT = 2000000;
 const COMMENT_CAP = 20;
 
+function private_cache($seconds) {
+    header_remove("Pragma");
+    header_remove("Expires");
+    header("Cache-Control: private, max-age=" . (int) $seconds);
+}
+
 function deny() {
     http_response_code(404);
     header("Content-Type: text/plain; charset=utf-8");
-    header("Cache-Control: private, max-age=300");
+    private_cache(300);
     exit;
 }
 
@@ -46,28 +66,41 @@ function image_host_ok($url) {
     ), true);
 }
 
-function fetch_url($url, $limit, $allow, $extraHeaders = array(), $rejectOversize = false, $timeout = 8, $decode = false, $userAgent = "") {
-    if (!function_exists("curl_init")) return array(0, "", "");
+function request_headers($extraHeaders) {
     $headers = array("Accept: text/html,application/json,application/xml;q=0.9,image/avif,image/webp,image/*,*/*;q=0.8");
     foreach ($extraHeaders as $header) {
         if (is_string($header) && $header !== "") $headers[] = $header;
     }
+    return $headers;
+}
+
+function open_curl($url, $headers, $timeout, $decode, $userAgent) {
+    if (!function_exists("curl_init")) return false;
+    $ch = curl_init($url);
+    if ($ch === false) return false;
+    $options = array(
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_FOLLOWLOCATION => false,
+        CURLOPT_CONNECTTIMEOUT => 4,
+        CURLOPT_TIMEOUT => $timeout,
+        CURLOPT_PROTOCOLS => CURLPROTO_HTTPS,
+        CURLOPT_USERAGENT => $userAgent !== "" ? $userAgent : "Mozilla/5.0 (compatible; BotDash/1.0)",
+        CURLOPT_HTTPHEADER => $headers
+    );
+    if ($decode) $options[CURLOPT_ENCODING] = "";
+    curl_setopt_array($ch, $options);
+    return $ch;
+}
+
+function fetch_url($url, $limit, $allow, $extraHeaders = array(), $rejectOversize = false, $timeout = 8, $decode = false, $userAgent = "") {
+    if (!function_exists("curl_init")) return array(0, "", "");
+    $headers = request_headers($extraHeaders);
     $current = $url;
     $hop = 0;
     while ($hop < 4) {
         if (!$allow($current)) return array(0, "", "");
-        $ch = curl_init($current);
-        $options = array(
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_FOLLOWLOCATION => false,
-            CURLOPT_CONNECTTIMEOUT => 4,
-            CURLOPT_TIMEOUT => $timeout,
-            CURLOPT_PROTOCOLS => CURLPROTO_HTTPS,
-            CURLOPT_USERAGENT => $userAgent !== "" ? $userAgent : "Mozilla/5.0 (compatible; BotDash/1.0)",
-            CURLOPT_HTTPHEADER => $headers
-        );
-        if ($decode) $options[CURLOPT_ENCODING] = "";
-        curl_setopt_array($ch, $options);
+        $ch = open_curl($current, $headers, $timeout, $decode, $userAgent);
+        if ($ch === false) return array(0, "", "");
         $body = curl_exec($ch);
         $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
         $type = (string) curl_getinfo($ch, CURLINFO_CONTENT_TYPE);
@@ -86,6 +119,136 @@ function fetch_url($url, $limit, $allow, $extraHeaders = array(), $rejectOversiz
         return array($status, $body, $type);
     }
     return array(0, "", "");
+}
+
+function fetch_urls($jobs) {
+    $results = array();
+    $count = count($jobs);
+    for ($i = 0; $i < $count; $i++) $results[$i] = array(0, "", "");
+    if ($count === 0) return $results;
+    $serial = function () use ($jobs, &$results, $count) {
+        for ($i = 0; $i < $count; $i++) {
+            $job = $jobs[$i];
+            $results[$i] = fetch_url(
+                $job["url"],
+                $job["limit"],
+                $job["allow"],
+                isset($job["headers"]) ? $job["headers"] : array(),
+                !empty($job["reject"]),
+                isset($job["timeout"]) ? $job["timeout"] : 8,
+                !empty($job["decode"]),
+                isset($job["ua"]) ? $job["ua"] : ""
+            );
+        }
+        return $results;
+    };
+    if (!function_exists("curl_multi_init") || !function_exists("curl_init")) return $serial();
+
+    $pending = array();
+    for ($i = 0; $i < $count; $i++) {
+        $job = $jobs[$i];
+        $pending[$i] = array(
+            "url" => $job["url"],
+            "hop" => 0,
+            "limit" => $job["limit"],
+            "allow" => $job["allow"],
+            "headers" => isset($job["headers"]) ? $job["headers"] : array(),
+            "reject" => !empty($job["reject"]),
+            "timeout" => isset($job["timeout"]) ? $job["timeout"] : 8,
+            "decode" => !empty($job["decode"]),
+            "ua" => isset($job["ua"]) ? $job["ua"] : ""
+        );
+    }
+    $wave = 0;
+    while ($pending && $wave < 4) {
+        $wave += 1;
+        $mh = curl_multi_init();
+        if ($mh === false) {
+            foreach ($pending as $index => $job) {
+                $results[$index] = fetch_url(
+                    $job["url"],
+                    $job["limit"],
+                    $job["allow"],
+                    $job["headers"],
+                    $job["reject"],
+                    $job["timeout"],
+                    $job["decode"],
+                    $job["ua"]
+                );
+            }
+            return $results;
+        }
+        $handles = array();
+        foreach (array_keys($pending) as $index) {
+            $job = $pending[$index];
+            if (!is_callable($job["allow"]) || !$job["allow"]($job["url"])) {
+                $results[$index] = array(0, "", "");
+                unset($pending[$index]);
+                continue;
+            }
+            $ch = open_curl($job["url"], request_headers($job["headers"]), $job["timeout"], $job["decode"], $job["ua"]);
+            if ($ch === false) {
+                $results[$index] = array(0, "", "");
+                unset($pending[$index]);
+                continue;
+            }
+            curl_multi_add_handle($mh, $ch);
+            $handles[spl_object_id($ch)] = array($index, $ch);
+        }
+        if (!$handles) {
+            curl_multi_close($mh);
+            continue;
+        }
+        $running = 0;
+        do {
+            $mrc = curl_multi_exec($mh, $running);
+        } while ($mrc === CURLM_CALL_MULTI_PERFORM);
+        while ($running && $mrc === CURLM_OK) {
+            if (curl_multi_select($mh, 1.0) === -1) usleep(10000);
+            do {
+                $mrc = curl_multi_exec($mh, $running);
+            } while ($mrc === CURLM_CALL_MULTI_PERFORM);
+        }
+        foreach ($handles as $pair) {
+            $index = $pair[0];
+            $ch = $pair[1];
+            $job = $pending[$index];
+            $body = curl_multi_getcontent($ch);
+            $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+            $type = (string) curl_getinfo($ch, CURLINFO_CONTENT_TYPE);
+            $location = (string) curl_getinfo($ch, CURLINFO_REDIRECT_URL);
+            $errno = curl_errno($ch);
+            curl_multi_remove_handle($mh, $ch);
+            curl_close($ch);
+            if ($errno !== 0 || !is_string($body)) {
+                $results[$index] = array(0, "", "");
+                unset($pending[$index]);
+                continue;
+            }
+            if (strlen($body) > $job["limit"]) {
+                if ($job["reject"]) {
+                    $results[$index] = array(0, "", "");
+                    unset($pending[$index]);
+                    continue;
+                }
+                $body = substr($body, 0, $job["limit"]);
+            }
+            if ($status >= 300 && $status < 400 && $location !== "") {
+                if ($job["hop"] >= 3) {
+                    $results[$index] = array(0, "", "");
+                    unset($pending[$index]);
+                    continue;
+                }
+                $pending[$index]["url"] = $location;
+                $pending[$index]["hop"] = $job["hop"] + 1;
+                continue;
+            }
+            $results[$index] = array($status, $body, $type);
+            unset($pending[$index]);
+        }
+        curl_multi_close($mh);
+    }
+    return $results;
 }
 
 function decode_js_url($value) {
@@ -163,67 +326,74 @@ function count_or_null($value) {
     return $value;
 }
 
-function seoul_today() {
-    $now = new DateTime("now", new DateTimeZone("Asia/Seoul"));
-    return $now->format("Y-m-d");
+function cache_dir() {
+    $dir = sys_get_temp_dir() . "/botdash-cache";
+    if (!is_dir($dir)) @mkdir($dir, 0700, true);
+    return $dir;
 }
 
-function seoul_shift($modify) {
-    $date = new DateTime("now", new DateTimeZone("Asia/Seoul"));
-    $date->modify($modify);
-    return $date->format("Y-m-d");
+function cache_file($kind, $blog, $large) {
+    $name = hash("sha256", $kind . "\0" . $blog . "\0" . ($large ? "large" : "thumb"));
+    return cache_dir() . "/" . $name;
 }
 
-function day_key($raw) {
-    $text = trim(html_entity_decode((string) $raw, ENT_QUOTES, "UTF-8"));
-    if ($text === "") return "";
-    if ($text === "오늘" || preg_match('/^(?:방금|조금)\s*전$/u', $text) || preg_match('/^\d+\s*초\s*전$/u', $text)) {
-        return seoul_today();
-    }
-    if (preg_match('/^(\d+)\s*분\s*전$/u', $text, $matched)) return seoul_shift("-" . (int) $matched[1] . " minutes");
-    if (preg_match('/^(\d+)\s*시간\s*전$/u', $text, $matched)) return seoul_shift("-" . (int) $matched[1] . " hours");
-    if ($text === "어제") return seoul_shift("-1 day");
-    if (preg_match('/^(\d+)\s*일\s*전$/u', $text, $matched)) return seoul_shift("-" . (int) $matched[1] . " days");
-    $compact = preg_replace("/\s+/", "", $text);
-    if (preg_match("/^(\d{4})[.\\-\/](\d{1,2})[.\\-\/](\d{1,2})/", $compact, $matched)) {
-        return sprintf("%04d-%02d-%02d", (int) $matched[1], (int) $matched[2], (int) $matched[3]);
-    }
-    if (preg_match("/^(\d{4})(\d{2})(\d{2})$/", $compact, $matched)) {
-        return $matched[1] . "-" . $matched[2] . "-" . $matched[3];
-    }
-    if (preg_match("/^(\d{10,13})$/", $compact, $matched)) {
-        $seconds = strlen($matched[1]) > 10 ? (int) floor(((float) $matched[1]) / 1000) : (int) $matched[1];
-        $date = new DateTime("@" . $seconds);
-        $date->setTimezone(new DateTimeZone("Asia/Seoul"));
-        return $date->format("Y-m-d");
-    }
-    $stamp = strtotime($text);
-    if ($stamp) {
-        $date = new DateTime("@" . $stamp);
-        $date->setTimezone(new DateTimeZone("Asia/Seoul"));
-        return $date->format("Y-m-d");
-    }
-    return "";
+function request_bypasses_cache() {
+    $control = isset($_SERVER["HTTP_CACHE_CONTROL"]) ? strtolower((string) $_SERVER["HTTP_CACHE_CONTROL"]) : "";
+    $pragma = isset($_SERVER["HTTP_PRAGMA"]) ? strtolower((string) $_SERVER["HTTP_PRAGMA"]) : "";
+    if (strpos($pragma, "no-cache") !== false) return true;
+    if (strpos($control, "no-cache") !== false || strpos($control, "no-store") !== false) return true;
+    return false;
 }
 
-function count_days($text, $pattern, $today) {
-    if (!preg_match_all($pattern, $text, $matched)) return null;
-    $count = 0;
-    $known = false;
-    foreach ($matched[1] as $raw) {
-        $day = day_key($raw);
-        if ($day === "") continue;
-        $known = true;
-        if ($day === $today) $count += 1;
+function read_cache($kind, $blog, $large, $expect) {
+    if (request_bypasses_cache()) return null;
+    $path = cache_file($kind, $blog, $large);
+    if (!is_file($path)) return null;
+    $raw = @file_get_contents($path);
+    if (!is_string($raw) || $raw === "") return null;
+    $split = explode("\n", $raw, 3);
+    if (count($split) < 3) return null;
+    $expire = (int) $split[0];
+    $type = $split[1];
+    $body = $split[2];
+    if ($expire <= time() || $body === "") {
+        @unlink($path);
+        return null;
     }
-    return $known ? $count : null;
+    if ($expect === "json") {
+        if (stripos($type, "application/json") !== 0) return null;
+        $decoded = json_decode($body, true);
+        if (!is_array($decoded)) return null;
+        return array("application/json; charset=utf-8", $body);
+    }
+    if (stripos($type, "image/") !== 0) return null;
+    $magic = image_type($body, "");
+    if ($magic === "") return null;
+    return array($magic, $body);
 }
 
-function send_counts($posts, $comments, $today = null, $total = null, $postsToday = null, $commentsToday = null) {
-    header("Content-Type: application/json; charset=utf-8");
-    header("Cache-Control: private, max-age=600");
+function write_cache($kind, $blog, $large, $type, $body, $ttl) {
+    if ($type === "" || $body === "" || !preg_match('#^(image/[a-z0-9.+-]+|application/json; charset=utf-8)$#i', $type)) return;
+    $dir = cache_dir();
+    if (!is_dir($dir) || !is_writable($dir)) return;
+    $path = $dir . "/" . basename(cache_file($kind, $blog, $large));
+    $tmp = $path . "." . getmypid() . ".tmp";
+    $payload = (string) (time() + (int) $ttl) . "\n" . $type . "\n" . $body;
+    if (@file_put_contents($tmp, $payload, LOCK_EX) === false) return;
+    @chmod($tmp, 0600);
+    if (!@rename($tmp, $path)) @unlink($tmp);
+}
+
+function send_body($type, $body, $seconds) {
+    header("Content-Type: " . $type);
+    private_cache($seconds);
     header("X-Content-Type-Options: nosniff");
-    echo json_encode(array(
+    echo $body;
+    exit;
+}
+
+function send_counts($posts, $comments, $today = null, $total = null, $postsToday = null, $commentsToday = null, $cacheBlog = "") {
+    $json = json_encode(array(
         "posts" => count_or_null($posts),
         "comments" => count_or_null($comments),
         "today" => count_or_null($today),
@@ -231,7 +401,11 @@ function send_counts($posts, $comments, $today = null, $total = null, $postsToda
         "postsToday" => count_or_null($postsToday),
         "commentsToday" => count_or_null($commentsToday)
     ));
-    exit;
+    if (!is_string($json) || $json === "") $json = "{}";
+    if ($cacheBlog !== "" && $json !== "{}") {
+        write_cache("counts", $cacheBlog, false, "application/json; charset=utf-8", $json, 600);
+    }
+    send_body("application/json; charset=utf-8", $json, 600);
 }
 
 function json_count($value) {
@@ -240,17 +414,7 @@ function json_count($value) {
     return null;
 }
 
-function naver_visitors($id) {
-    $url = "https://m.blog.naver.com/api/blogs/" . rawurlencode($id);
-    list($status, $body) = fetch_url(
-        $url,
-        BLOG_HTML_LIMIT,
-        "naver_host_ok",
-        array("Referer: https://m.blog.naver.com/" . rawurlencode($id)),
-        true,
-        6,
-        true
-    );
+function naver_visitor_counts($status, $body) {
     if ($status !== 200 || $body === "") return array(null, null);
     $data = json_decode($body, true);
     if (!is_array($data) || empty($data["isSuccess"]) || !isset($data["result"]) || !is_array($data["result"])) {
@@ -263,23 +427,31 @@ function naver_visitors($id) {
     );
 }
 
-function tistory_visitors($host) {
-    $allow = function ($url) use ($host) {
-        if (host_of($url) !== $host) return false;
-        $path = parse_url($url, PHP_URL_PATH);
-        return !is_string($path) || $path === "" || $path === "/";
-    };
-    $browser = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
-    list($status, $html) = fetch_url(
-        "https://" . $host . "/",
-        BLOG_HTML_LIMIT,
-        $allow,
-        array("Accept-Language: ko-KR,ko;q=0.9"),
-        true,
-        6,
-        true,
-        $browser
-    );
+function tistory_browser() {
+    return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
+}
+
+function tistory_visitors($host, $fetched = null) {
+    if (is_array($fetched)) {
+        $status = isset($fetched[0]) ? (int) $fetched[0] : 0;
+        $html = isset($fetched[1]) ? (string) $fetched[1] : "";
+    } else {
+        $allow = function ($url) use ($host) {
+            if (host_of($url) !== $host) return false;
+            $path = parse_url($url, PHP_URL_PATH);
+            return !is_string($path) || $path === "" || $path === "/";
+        };
+        list($status, $html) = fetch_url(
+            "https://" . $host . "/",
+            BLOG_HTML_LIMIT,
+            $allow,
+            array("Accept-Language: ko-KR,ko;q=0.9"),
+            true,
+            6,
+            true,
+            tistory_browser()
+        );
+    }
     if ($status !== 200 || $html === "") return array(null, null);
     $pos = stripos($html, "box-visit");
     if ($pos === false && preg_match('/class="[^"]*\bcounter\b[^"]*"/i', $html, $found, PREG_OFFSET_CAPTURE)) {
@@ -305,38 +477,81 @@ function tistory_visitors($host) {
 function naver_counts($id) {
     $listUrl = "https://blog.naver.com/PostTitleListAsync.naver?blogId=" . rawurlencode($id)
         . "&currentPage=1&countPerPage=" . COMMENT_CAP;
-    list($status, $body) = fetch_url(
-        $listUrl,
-        BLOG_HTML_LIMIT,
-        "naver_host_ok",
-        array("Referer: https://blog.naver.com/" . rawurlencode($id)),
-        true,
-        6,
-        true
-    );
+    $rssAllow = function ($url) use ($id) {
+        if (host_of($url) !== "rss.blog.naver.com") return false;
+        $path = parse_url($url, PHP_URL_PATH);
+        return $path === "/" . $id . ".xml";
+    };
+    // 목록, RSS, 방문자 수는 서로 기다릴 필요가 없다.
+    $wave = fetch_urls(array(
+        array(
+            "url" => $listUrl,
+            "limit" => BLOG_HTML_LIMIT,
+            "allow" => "naver_host_ok",
+            "headers" => array("Referer: https://blog.naver.com/" . rawurlencode($id)),
+            "reject" => true,
+            "timeout" => 6,
+            "decode" => true
+        ),
+        array(
+            "url" => "https://rss.blog.naver.com/" . rawurlencode($id) . ".xml",
+            "limit" => BLOG_HTML_LIMIT,
+            "allow" => $rssAllow,
+            "headers" => array(),
+            "reject" => true,
+            "timeout" => 6,
+            "decode" => true
+        ),
+        array(
+            "url" => "https://m.blog.naver.com/api/blogs/" . rawurlencode($id),
+            "limit" => BLOG_HTML_LIMIT,
+            "allow" => "naver_host_ok",
+            "headers" => array("Referer: https://m.blog.naver.com/" . rawurlencode($id)),
+            "reject" => true,
+            "timeout" => 6,
+            "decode" => true
+        )
+    ));
+    list($status, $body) = $wave[0];
+    list($rssStatus, $xml) = $wave[1];
+    $visitors = naver_visitor_counts($wave[2][0], $wave[2][1]);
     if ($status !== 200 || !preg_match('/"totalCount"\s*:\s*"?(\d+)/', $body, $totalMatch)) {
-        return array(null, null, null, null);
+        return array(null, null, $visitors[0], $visitors[1], null, null);
     }
     $today = seoul_today();
     // 목록의 "5분 전"은 화면 문구라서 빠질 수 있다. RSS 발행 시각이 있으면 그 날짜를 쓴다.
-    $postsToday = naver_rss_today($id, $today);
+    $postsToday = ($rssStatus === 200 && $xml !== "") ? rss_posts_on_day($xml, $today) : null;
     if ($postsToday === null) $postsToday = count_days($body, '/"addDate"\s*:\s*"([^"]+)"/', $today);
     $total = (int) $totalMatch[1];
-    if ($total === 0) return array(0, 0, 0, 0);
+    if ($total === 0) return array(0, 0, $visitors[0], $visitors[1], 0, 0);
     // 글이 상한보다 많으면 일부 댓글만 더해 전체인 것처럼 보여 주지 않는다.
-    if ($total > COMMENT_CAP) return array($total, null, $postsToday, null);
-    if (!preg_match_all('/"logNo"\s*:\s*"(\d+)"/', $body, $logMatch)) return array($total, null, $postsToday, null);
+    if ($total > COMMENT_CAP) return array($total, null, $visitors[0], $visitors[1], $postsToday, null);
+    if (!preg_match_all('/"logNo"\s*:\s*"(\d+)"/', $body, $logMatch)) {
+        return array($total, null, $visitors[0], $visitors[1], $postsToday, null);
+    }
     $logNos = array_values(array_unique($logMatch[1]));
-    if (count($logNos) !== $total) return array($total, null, $postsToday, null);
+    if (count($logNos) !== $total) return array($total, null, $visitors[0], $visitors[1], $postsToday, null);
+    $jobs = array();
+    foreach ($logNos as $logNo) {
+        $jobs[] = array(
+            "url" => "https://m.blog.naver.com/" . rawurlencode($id) . "/" . rawurlencode($logNo),
+            "limit" => BLOG_HTML_LIMIT,
+            "allow" => "naver_host_ok",
+            "headers" => array(),
+            "reject" => true,
+            "timeout" => 6,
+            "decode" => true
+        );
+    }
+    $pages = fetch_urls($jobs);
     $sum = 0;
     $commentsToday = 0;
     $sawCommentDay = false;
-    foreach ($logNos as $logNo) {
-        $page = "https://m.blog.naver.com/" . rawurlencode($id) . "/" . rawurlencode($logNo);
-        list($pageStatus, $html) = fetch_url($page, BLOG_HTML_LIMIT, "naver_host_ok", array(), true, 6, true);
+    foreach ($pages as $page) {
+        list($pageStatus, $html) = $page;
         $count = naver_comment_count($html);
         if ($pageStatus !== 200 || $count === null) {
-            return array($total, null, $postsToday, null);
+            return array($total, null, $visitors[0], $visitors[1], $postsToday, null);
         }
         $sum += $count;
         if ($count === 0) {
@@ -352,44 +567,7 @@ function naver_counts($id) {
             $commentsToday += $fresh;
         }
     }
-    return array($total, $sum, $postsToday, $sawCommentDay ? $commentsToday : null);
-}
-
-function naver_comment_count($html) {
-    if (preg_match('/commentCount="(\d+)"/', $html, $matched)) return (int) $matched[1];
-    if (preg_match('/\\\\"commentCount\\\\"\s*:\s*(\d+)/', $html, $matched)) return (int) $matched[1];
-    if (preg_match('/"commentCount"\s*:\s*(\d+)/', $html, $matched)) return (int) $matched[1];
-    return null;
-}
-
-function naver_rss_today($id, $today) {
-    $allow = function ($url) use ($id) {
-        if (host_of($url) !== "rss.blog.naver.com") return false;
-        $path = parse_url($url, PHP_URL_PATH);
-        return $path === "/" . $id . ".xml";
-    };
-    list($status, $xml) = fetch_url(
-        "https://rss.blog.naver.com/" . rawurlencode($id) . ".xml",
-        BLOG_HTML_LIMIT,
-        $allow,
-        array(),
-        true,
-        6,
-        true
-    );
-    if ($status !== 200 || $xml === "" || !preg_match_all('#<item\b[^>]*>(.*?)</item>#is', $xml, $items)) {
-        return null;
-    }
-    $count = 0;
-    $known = false;
-    foreach ($items[1] as $item) {
-        if (!preg_match('#<pubDate>\s*([^<]+)\s*</pubDate>#i', $item, $matched)) continue;
-        $day = day_key($matched[1]);
-        if ($day === "") continue;
-        $known = true;
-        if ($day === $today) $count += 1;
-    }
-    return $known ? $count : null;
+    return array($total, $sum, $visitors[0], $visitors[1], $postsToday, $sawCommentDay ? $commentsToday : null);
 }
 
 function tistory_comments($host, $postTotal) {
@@ -407,55 +585,54 @@ function tistory_comments($host, $postTotal) {
             && preg_match('/^[1-9]\d{0,2}$/', (string) $query["page"]);
     };
     $counts = array();
-    for ($page = 1; $page <= 8; $page++) {
-        $url = "https://" . $host . "/" . ($page === 1 ? "" : "?page=" . $page);
-        $browser = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
-        list($status, $html) = fetch_url($url, BLOG_HTML_LIMIT, $allow, array(), true, 6, true, $browser);
-        if ($status !== 200 || $html === "") {
-            if ($page === 1) return null;
-            break;
+    $browser = tistory_browser();
+    list($status, $html) = fetch_url("https://" . $host . "/", BLOG_HTML_LIMIT, $allow, array(), true, 6, true, $browser);
+    if ($status !== 200 || $html === "") return null;
+    $added = tistory_comment_page($html, $counts);
+    if ($added === null) return null;
+    if ($added > 0 && tistory_has_next_page($html, 1)) {
+        $jobs = array();
+        for ($page = 2; $page <= 8; $page++) {
+            $jobs[] = array(
+                "url" => "https://" . $host . "/?page=" . $page,
+                "limit" => BLOG_HTML_LIMIT,
+                "allow" => $allow,
+                "headers" => array(),
+                "reject" => true,
+                "timeout" => 6,
+                "decode" => true,
+                "ua" => $browser
+            );
         }
-        if (!preg_match_all('/id="commentCount(\d+)_\d+"[^>]*>\s*(\d*)\s*</', $html, $matched, PREG_SET_ORDER)) {
-            if ($page === 1) return null;
-            break;
+        $pages = fetch_urls($jobs);
+        foreach ($pages as $index => $pageResult) {
+            $page = $index + 2;
+            $status = $pageResult[0];
+            $html = $pageResult[1];
+            if ($status !== 200 || $html === "") break;
+            $added = tistory_comment_page($html, $counts);
+            if ($added === null || $added === 0) break;
+            if (!tistory_has_next_page($html, $page)) break;
         }
-        $added = 0;
-        foreach ($matched as $row) {
-            if (isset($counts[$row[1]])) continue;
-            $counts[$row[1]] = ($row[2] === "") ? 0 : (int) $row[2];
-            $added += 1;
-        }
-        if ($added === 0) break;
-        if (!preg_match('/(?:\?|&|\/)page=' . ($page + 1) . '(?:["&\/\s]|$)/', $html)) break;
     }
-    if (!$counts) return null;
     // 글 수보다 적게 보면 합이 전체인 것처럼 보이지 않게 비운다.
-    if (is_int($postTotal) && $postTotal > count($counts)) return null;
-    $sum = 0;
-    foreach ($counts as $count) $sum += $count;
-    return $sum;
+    return tistory_comment_total($counts, is_int($postTotal) ? $postTotal : null);
 }
 
-function tistory_posts_today($host, $today) {
-    $allow = function ($url) use ($host) {
-        if (host_of($url) !== $host) return false;
-        $path = parse_url($url, PHP_URL_PATH);
-        return $path === "/rss" || $path === "/feed";
-    };
-    list($status, $xml) = fetch_url("https://" . $host . "/rss", BLOG_HTML_LIMIT, $allow, array(), true, 6, true);
-    if ($status !== 200 || $xml === "" || !preg_match_all('#<item\b[^>]*>(.*?)</item>#is', $xml, $items)) {
-        return null;
+function tistory_posts_today($host, $today, $fetched = null) {
+    if (is_array($fetched)) {
+        $status = isset($fetched[0]) ? (int) $fetched[0] : 0;
+        $xml = isset($fetched[1]) ? (string) $fetched[1] : "";
+    } else {
+        $allow = function ($url) use ($host) {
+            if (host_of($url) !== $host) return false;
+            $path = parse_url($url, PHP_URL_PATH);
+            return $path === "/rss" || $path === "/feed";
+        };
+        list($status, $xml) = fetch_url("https://" . $host . "/rss", BLOG_HTML_LIMIT, $allow, array(), true, 6, true);
     }
-    $count = 0;
-    $known = false;
-    foreach ($items[1] as $item) {
-        if (!preg_match('#<pubDate>\s*([^<]+)\s*</pubDate>#i', $item, $matched)) continue;
-        $day = day_key($matched[1]);
-        if ($day === "") continue;
-        $known = true;
-        if ($day === $today) $count += 1;
-    }
-    return $known ? $count : null;
+    if ($status !== 200 || $xml === "") return null;
+    return rss_posts_on_day($xml, $today);
 }
 
 function numeric_post_locs($xml, &$seen) {
@@ -473,29 +650,101 @@ function numeric_post_locs($xml, &$seen) {
     return $added;
 }
 
-function tistory_posts($host) {
+function tistory_posts($host, $fetched = null) {
     $allow = function ($url) use ($host) {
         if (host_of($url) !== $host) return false;
         $path = parse_url($url, PHP_URL_PATH);
         return is_string($path) && preg_match('#^/sitemap[^/]*\.xml$#i', $path);
     };
-    list($status, $xml) = fetch_url("https://" . $host . "/sitemap.xml", BLOG_HTML_LIMIT, $allow, array(), true, 6, true);
+    if (is_array($fetched)) {
+        $status = isset($fetched[0]) ? (int) $fetched[0] : 0;
+        $xml = isset($fetched[1]) ? (string) $fetched[1] : "";
+    } else {
+        list($status, $xml) = fetch_url("https://" . $host . "/sitemap.xml", BLOG_HTML_LIMIT, $allow, array(), true, 6, true);
+    }
     if ($status !== 200 || $xml === "") return null;
     if (stripos($xml, "<urlset") === false && stripos($xml, "<sitemapindex") === false) return null;
     $seen = array();
     if (stripos($xml, "<sitemapindex") !== false) {
         if (!preg_match_all('#<loc>\s*([^<]+)\s*</loc>#i', $xml, $children)) return null;
         if (count($children[1]) > 4) return null;
-        $total = 0;
+        $jobs = array();
         foreach ($children[1] as $child) {
             $child = trim(html_entity_decode($child, ENT_QUOTES, "UTF-8"));
-            list($childStatus, $childXml) = fetch_url($child, BLOG_HTML_LIMIT, $allow, array(), true, 6, true);
+            $jobs[] = array(
+                "url" => $child,
+                "limit" => BLOG_HTML_LIMIT,
+                "allow" => $allow,
+                "headers" => array(),
+                "reject" => true,
+                "timeout" => 6,
+                "decode" => true
+            );
+        }
+        $total = 0;
+        foreach (fetch_urls($jobs) as $result) {
+            list($childStatus, $childXml) = $result;
             if ($childStatus !== 200 || $childXml === "") return null;
             $total += numeric_post_locs($childXml, $seen);
         }
         return $total;
     }
     return numeric_post_locs($xml, $seen);
+}
+
+function tistory_live($host) {
+    $today = seoul_today();
+    $homeAllow = function ($url) use ($host) {
+        if (host_of($url) !== $host) return false;
+        $path = parse_url($url, PHP_URL_PATH);
+        return !is_string($path) || $path === "" || $path === "/";
+    };
+    $rssAllow = function ($url) use ($host) {
+        if (host_of($url) !== $host) return false;
+        $path = parse_url($url, PHP_URL_PATH);
+        return $path === "/rss" || $path === "/feed";
+    };
+    $sitemapAllow = function ($url) use ($host) {
+        if (host_of($url) !== $host) return false;
+        $path = parse_url($url, PHP_URL_PATH);
+        return is_string($path) && preg_match('#^/sitemap[^/]*\.xml$#i', $path);
+    };
+    // 사이트맵, RSS, 첫 화면은 댓글 합계보다 먼저, 그리고 같이 받는다.
+    $wave = fetch_urls(array(
+        array(
+            "url" => "https://" . $host . "/sitemap.xml",
+            "limit" => BLOG_HTML_LIMIT,
+            "allow" => $sitemapAllow,
+            "headers" => array(),
+            "reject" => true,
+            "timeout" => 6,
+            "decode" => true
+        ),
+        array(
+            "url" => "https://" . $host . "/rss",
+            "limit" => BLOG_HTML_LIMIT,
+            "allow" => $rssAllow,
+            "headers" => array(),
+            "reject" => true,
+            "timeout" => 6,
+            "decode" => true
+        ),
+        array(
+            "url" => "https://" . $host . "/",
+            "limit" => BLOG_HTML_LIMIT,
+            "allow" => $homeAllow,
+            "headers" => array("Accept-Language: ko-KR,ko;q=0.9"),
+            "reject" => true,
+            "timeout" => 6,
+            "decode" => true,
+            "ua" => tistory_browser()
+        )
+    ));
+    $posts = tistory_posts($host, $wave[0]);
+    $postsToday = tistory_posts_today($host, $today, $wave[1]);
+    list($todayCount, $total) = tistory_visitors($host, $wave[2]);
+    $comments = $posts === 0 ? 0 : tistory_comments($host, $posts);
+    return array($posts, $comments, $todayCount, $total, $posts === 0 ? 0 : $postsToday, $posts === 0 ? 0 : null);
 }
 
 function image_type($body, $header) {
@@ -512,21 +761,21 @@ $kind = blog_kind($blog);
 if ($kind === "") deny();
 
 if (isset($_GET["view"]) && (string) $_GET["view"] === "counts") {
+    $cached = read_cache("counts", $blog, false, "json");
+    if ($cached !== null) send_body($cached[0], $cached[1], 600);
     if ($kind === "naver") {
         $id = naver_blog_id($blog);
-        if ($id === "") send_counts(null, null);
-        list($posts, $comments, $postsToday, $commentsToday) = naver_counts($id);
-        list($today, $total) = naver_visitors($id);
-        send_counts($posts, $comments, $today, $total, $postsToday, $commentsToday);
+        if ($id === "") send_counts(null, null, null, null, null, null, $blog);
+        $row = naver_counts($id);
+        send_counts($row[0], $row[1], $row[2], $row[3], $row[4], $row[5], $blog);
     }
-    $host = host_of($blog);
-    $posts = tistory_posts($host);
-    $postsToday = tistory_posts_today($host, seoul_today());
-    list($today, $total) = tistory_visitors($host);
-    // 글 목록의 commentCount 칸을 더한다. 빈 칸은 0이다. 목록에 없는 글이 있으면 합을 비운다.
-    $comments = $posts === 0 ? 0 : tistory_comments($host, $posts);
-    send_counts($posts, $comments, $today, $total, $posts === 0 ? 0 : $postsToday, $posts === 0 ? 0 : null);
+    $row = tistory_live(host_of($blog));
+    send_counts($row[0], $row[1], $row[2], $row[3], $row[4], $row[5], $blog);
 }
+
+$large = isset($_GET["size"]) && (string) $_GET["size"] === "large";
+$cachedImage = read_cache("image", $blog, $large, "image");
+if ($cachedImage !== null) send_body($cachedImage[0], $cachedImage[1], 3600);
 
 $fetchUrl = $blog;
 if ($kind === "naver") {
@@ -546,7 +795,6 @@ list($status, $html) = fetch_url($fetchUrl, BLOG_HTML_LIMIT, function ($url) {
 });
 if ($status !== 200 || $html === "") deny();
 
-$large = isset($_GET["size"]) && (string) $_GET["size"] === "large";
 $image = profile_from_html($kind, $html, $large);
 if ($image === "") deny();
 
@@ -565,7 +813,5 @@ if (($imageStatus !== 200 || $type === "" || $bytes === "") && $large) {
 }
 if ($imageStatus !== 200 || $type === "" || $bytes === "") deny();
 
-header("Content-Type: " . $type);
-header("Cache-Control: private, max-age=3600");
-header("X-Content-Type-Options: nosniff");
-echo $bytes;
+write_cache("image", $blog, $large, $type, $bytes, 3600);
+send_body($type, $bytes, 3600);

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss><channel>
+  <item><title>today</title><pubDate>Fri, 16 Oct 2026 09:00:00 +0900</pubDate></item>
+  <item><title>yesterday</title><pubDate>Thu, 15 Oct 2026 23:30:00 +0900</pubDate></item>
+  <item><title>missing-date</title><description>no pubDate</description></item>
+</channel></rss>
