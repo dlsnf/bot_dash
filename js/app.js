@@ -33,6 +33,14 @@
   };
   var FILTERS = { all: 1, has: 1, zero: 1 };
   var SORTS = { visitors_desc: 1, visitors_asc: 1, name: 1, drop: 1, posts: 1 };
+  var GAP_TEXT = {
+    cap20: "20개 초과",
+    cap40: "40개 초과",
+    page8: "8페이지 초과",
+    short: "목록이 부족",
+    unread: "못 읽음",
+    more: "댓글이 더 있음"
+  };
   var SECRET_KEYS = { password: 1, passwd: 1, pwd: 1, secret: 1, token: 1 };
 
   var state = {
@@ -59,6 +67,8 @@
     countTimer: 0,
     countRefreshBusy: false,
     countRefreshGen: 0,
+    // 캐릭터 파일을 읽은 뒤 집계를 부르기 전까지는 countsPending이 비어 있다.
+    countIconHold: false,
     thumbs: {},
     thumbArchive: {},
     thumbRefreshGen: 0,
@@ -67,7 +77,9 @@
     cardColumns: 0,
     cardMoving: false,
     cardMoveGen: 0,
-    countsShown: false
+    countsShown: false,
+    history: {},
+    weekChart: null
   };
 
   if (!window.BotDashReel || !window.BotDashChart || !window.BotDashLogin) {
@@ -90,7 +102,9 @@
     formatNumber: formatNumber,
     paintStatic: paintStatic,
     setOdometer: setOdometer,
-    reducedMotion: reducedMotion
+    reducedMotion: reducedMotion,
+    weekSeries: weekSeries,
+    weekLabels: weekLabels
   });
   var loginApi = window.BotDashLogin.create({
     state: state,
@@ -174,6 +188,13 @@
       };
     } catch (error) {
       notices.push("stats.json을 읽지 못했습니다. 마크다운 안의 통계만 사용합니다.");
+    }
+    state.history = {};
+    try {
+      var historyText = await fetchText("content.php?f=" + encodeURIComponent("data/history.json") + "&t=" + stamp);
+      state.history = readHistory(JSON.parse(historyText));
+    } catch (error) {
+      state.history = {};
     }
 
     var rows = await Promise.all(files.map(async function (file) {
@@ -304,7 +325,7 @@
     var accounts = (character.accounts || []).map(function (account) {
       return [account.platform, account.id, account.email, account.note].join(" ");
     }).join(" ");
-    return [character.name, character.nickname, character.id, character.status, character.intro, blogs, accounts].join(" ").toLowerCase();
+    return [character.name, character.nickname, character.birthdate, genderLabel(character.gender), character.id, character.status, character.intro, blogs, accounts].join(" ").toLowerCase();
   }
 
   function matchesQuery(character, query) {
@@ -1008,6 +1029,38 @@
     return true;
   }
 
+  function formatBirth(value) {
+    var matched = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || ""));
+    if (!matched) return "";
+    return Number(matched[1]) + "년 " + Number(matched[2]) + "월 " + Number(matched[3]) + "일";
+  }
+
+  function genderLabel(gender) {
+    if (gender === "female") return "여자";
+    if (gender === "male") return "남자";
+    return "";
+  }
+
+  function genderIcon(gender) {
+    var label = genderLabel(gender);
+    if (!label) return null;
+    var mark = gender === "female" ? "fa-solid fa-venus" : "fa-solid fa-mars";
+    return h("span", { class: "gender gender-" + (gender === "female" ? "f" : "m"), title: label },
+      icon(mark),
+      h("span", { class: "sr-only", text: label })
+    );
+  }
+
+  function birthLine(character) {
+    var text = formatBirth(character && character.birthdate);
+    var mark = genderIcon(character && character.gender);
+    if (!text && !mark) return null;
+    return h("p", { class: "card-birth" },
+      mark,
+      text ? h("time", { datetime: character.birthdate, text: text }) : null
+    );
+  }
+
   function statusClass(status) {
     if (status === "활성") return "on";
     if (status === "휴식") return "rest";
@@ -1160,8 +1213,238 @@
       plus.appendChild(reel);
       host.appendChild(plus);
     }
-    plus.title = "오늘 올라온 " + label + " " + formatNumber(today);
+    plus.title = "최근 24시간 동안 올라온 " + label + " " + formatNumber(today);
     showReel(plus.querySelector(".odometer"), today, host);
+  }
+
+  function readHistory(parsed) {
+    var out = {};
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return out;
+    Object.keys(parsed).forEach(function (day) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return;
+      var row = parsed[day];
+      if (!row || typeof row !== "object" || Array.isArray(row)) return;
+      var clean = {};
+      Object.keys(row).forEach(function (blog) {
+        var value = normalizeCount(row[blog]);
+        if (!blog || value == null) return;
+        clean[blog] = value;
+      });
+      if (Object.keys(clean).length) out[day] = clean;
+    });
+    return out;
+  }
+
+  function rememberHistory(key, today) {
+    if (!key || today == null) return;
+    var day = seoulDayKey(0);
+    var row = state.history[day];
+    if (!row || typeof row !== "object" || Array.isArray(row)) {
+      row = {};
+      state.history[day] = row;
+    }
+    row[key] = today;
+  }
+
+  function seoulDayKey(offset) {
+    var parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Seoul",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit"
+    }).formatToParts(new Date());
+    var map = {};
+    parts.forEach(function (part) { map[part.type] = part.value; });
+    var utc = new Date(Date.UTC(Number(map.year), Number(map.month) - 1, Number(map.day)));
+    if (offset) utc.setUTCDate(utc.getUTCDate() - offset);
+    var month = utc.getUTCMonth() + 1;
+    var date = utc.getUTCDate();
+    return utc.getUTCFullYear() + "-" + (month < 10 ? "0" : "") + month + "-" + (date < 10 ? "0" : "") + date;
+  }
+
+  function weekKeys() {
+    var keys = [];
+    for (var i = 6; i >= 0; i--) keys.push(seoulDayKey(i));
+    return keys;
+  }
+
+  function weekLabels() {
+    return weekKeys().map(function (key) { return key.slice(5).replace("-", "/"); });
+  }
+
+  function storedToday(blogKey, dayKey) {
+    var row = state.history && state.history[dayKey];
+    if (!row || typeof row !== "object") return null;
+    return normalizeCount(row[blogKey]);
+  }
+
+  function blogDayVisitors(blogKey, dayKey) {
+    if (dayKey === seoulDayKey(0)) {
+      var data = state.blogCounts[blogKey];
+      if (data && data.status === "ok") return normalizeCount(data.today);
+      if (data && data.status === "fail") return null;
+    }
+    return storedToday(blogKey, dayKey);
+  }
+
+  function characterWeek(character) {
+    var keys = weekKeys();
+    var blogs = countableBlogs(character);
+    if (!blogs.length) return keys.map(function () { return null; });
+    return keys.map(function (day) {
+      var sum = 0;
+      for (var i = 0; i < blogs.length; i++) {
+        var value = blogDayVisitors(countableBlogUrl(blogs[i].url), day);
+        if (value == null) return null;
+        sum += value;
+      }
+      return sum;
+    });
+  }
+
+  function weekSeries(character) {
+    return characterWeek(character);
+  }
+
+  function sparkLabel(keys, series) {
+    var parts = ["최근 7일 오늘 방문자"];
+    keys.forEach(function (key, index) {
+      var day = Number(key.slice(5, 7)) + "월 " + Number(key.slice(8)) + "일";
+      parts.push(day + " " + (series[index] == null ? "기록 없음" : formatNumber(series[index]) + "명"));
+    });
+    return parts.join(", ");
+  }
+
+  function sparkSvg(series) {
+    var known = false;
+    series.forEach(function (value) { if (typeof value === "number") known = true; });
+    if (!known) return null;
+    var min = null;
+    var max = null;
+    series.forEach(function (value) {
+      if (typeof value !== "number") return;
+      if (min == null || value < min) min = value;
+      if (max == null || value > max) max = value;
+    });
+    if (min === max) {
+      min -= 1;
+      max += 1;
+    }
+    var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 84 28");
+    svg.setAttribute("aria-hidden", "true");
+    function xOf(index) { return 3 + (index * 78) / 6; }
+    function yOf(value) { return 3 + ((max - value) * 22) / (max - min); }
+    var run = [];
+    function flush() {
+      if (run.length > 1) {
+        var line = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+        line.setAttribute("points", run.map(function (point) {
+          return xOf(point.index) + "," + yOf(point.value);
+        }).join(" "));
+        svg.appendChild(line);
+      }
+      run.forEach(function (point) {
+        var dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+        dot.setAttribute("cx", String(xOf(point.index)));
+        dot.setAttribute("cy", String(yOf(point.value)));
+        dot.setAttribute("r", "2");
+        svg.appendChild(dot);
+      });
+      run = [];
+    }
+    series.forEach(function (value, index) {
+      if (typeof value !== "number") flush();
+      else run.push({ index: index, value: value });
+    });
+    flush();
+    return svg;
+  }
+
+  function paintSpark(el, character) {
+    if (!el) return;
+    var keys = weekKeys();
+    var series = character && character.ok ? characterWeek(character) : keys.map(function () { return null; });
+    el.setAttribute("aria-label", sparkLabel(keys, series));
+    var svg = sparkSvg(series);
+    if (!svg) {
+      el.replaceChildren(h("span", { class: "spark-empty", text: "기록 없음" }));
+      return;
+    }
+    el.replaceChildren(svg);
+  }
+
+  function sparkHost(character) {
+    var el = h("div", { class: "spark", "data-spark": character.id });
+    paintSpark(el, character);
+    return el;
+  }
+
+  function paintPartial(el, character) {
+    if (!el) return;
+    var show = !!(character && character.ok && !characterLivePending(character) && character.visitorPartial);
+    el.hidden = !show;
+    el.textContent = show ? "방문자 합에 빠진 블로그가 있습니다." : "";
+  }
+
+  function partialHost(character) {
+    var el = h("p", { class: "visitor-partial", "data-partial": character.id, hidden: true });
+    paintPartial(el, character);
+    return el;
+  }
+
+  function gapText(data, field) {
+    if (!data || (data.status !== "ok" && data.status !== "fail")) return "—";
+    if (data.status === "fail") return "못 불러옴";
+    if (!data.gaps) return "—";
+    var code = data.gaps[field];
+    if (GAP_TEXT[code]) return GAP_TEXT[code];
+    return "못 읽음";
+  }
+
+  function sideGapText(data, field) {
+    var code = data && data.gaps && data.gaps[field];
+    if (!GAP_TEXT[code]) return "";
+    return GAP_TEXT[code];
+  }
+
+  function normalizeGaps(data) {
+    var out = {};
+    var src = data && data.gaps;
+    if (!src || typeof src !== "object") return out;
+    Object.keys(GAP_TEXT).forEach(function (code) {
+      ["posts", "comments", "today", "total", "postsToday", "commentsToday"].forEach(function (field) {
+        if (src[field] === code) out[field] = code;
+      });
+    });
+    return out;
+  }
+
+  function paintCountGap(span, text) {
+    var host = span.querySelector(".count-pair") || span;
+    var gap = host.querySelector(".count-gap");
+    if (!text) {
+      if (gap) gap.remove();
+      return;
+    }
+    if (!gap) {
+      gap = document.createElement("span");
+      gap.className = "count-gap";
+      host.appendChild(gap);
+    }
+    gap.textContent = text;
+  }
+
+  function showCountOrGap(el, value, data, field, prefix) {
+    if (value == null && data && (data.status === "ok" || data.status === "fail")) {
+      el.removeAttribute("aria-busy");
+      var nodes = [];
+      if (prefix) nodes.push(h("span", { class: "odometer-prefix", text: prefix }));
+      nodes.push(h("span", { class: "count-gap", text: gapText(data, field) }));
+      el.replaceChildren.apply(el, nodes);
+      return;
+    }
+    showHostedCount(el, value, prefix);
   }
 
   function fillBlogCounts(el, url) {
@@ -1181,11 +1464,11 @@
     var commentsToday = data && data.status === "ok" ? data.commentsToday : null;
     var items = [];
     if (!activity) {
-      items.push({ label: "오늘", value: data && data.status === "ok" ? data.today : null });
-      items.push({ label: "전체", value: data && data.status === "ok" ? data.total : null });
+      items.push({ label: "오늘", field: "today", value: data && data.status === "ok" ? data.today : null });
+      items.push({ label: "전체", field: "total", value: data && data.status === "ok" ? data.total : null });
     }
-    items.push({ label: "글", icon: "fa-solid fa-file-lines", value: posts, today: postsToday });
-    items.push({ label: "댓글", icon: "fa-solid fa-comment", value: comments, today: commentsToday });
+    items.push({ label: "글", field: "posts", todayField: "postsToday", icon: "fa-solid fa-file-lines", value: posts, today: postsToday });
+    items.push({ label: "댓글", field: "comments", todayField: "commentsToday", icon: "fa-solid fa-comment", value: comments, today: commentsToday });
     var keep = {};
     items.forEach(function (item) {
       keep[item.label] = true;
@@ -1209,21 +1492,30 @@
       }
       if (loading) {
         paintTodayPlus(span, 0, item.label);
+        paintCountGap(span, "");
         var loadingPair = span.querySelector(".count-pair");
         if (loadingPair) loadingPair.replaceChildren(countSkeleton("sk-count"));
         return;
       }
-      // 총 6개 중 오늘 2개면 6이 아니라 4+2. 오늘 수가 없거나 총수보다 크면 총수만 보여 준다.
+      // 총 6개 중 최근 24시간에 2개면 6이 아니라 4+2. 그 수가 없거나 총수보다 크면 총수만 보여 준다.
       var showPlus = (item.label === "글" || item.label === "댓글")
         && typeof item.value === "number"
         && typeof item.today === "number"
         && item.today > 0
         && item.today <= item.value;
       span.removeAttribute("title");
+      if (item.value == null) {
+        paintTodayPlus(span, 0, item.label);
+        paintCountGap(span, "");
+        var emptyPair = span.querySelector(".count-pair");
+        if (emptyPair) emptyPair.replaceChildren(h("span", { class: "count-gap", text: gapText(data, item.field) }));
+        return;
+      }
       paintTodayPlus(span, showPlus ? item.today : 0, item.label);
+      paintCountGap(span, !showPlus && item.today == null && item.todayField ? sideGapText(data, item.todayField) : "");
       var pair = span.querySelector(".count-pair");
       if (pair) fadeCount(pair);
-      // +오늘 칸에도 odometer 가 있다. 쌍의 직계 자식만 본 숫자로 본다.
+      // +24시간 칸에도 odometer 가 있다. 쌍의 직계 자식만 본 숫자로 본다.
       var reel = null;
       if (pair) {
         for (var reelIndex = 0; reelIndex < pair.children.length; reelIndex++) {
@@ -1274,13 +1566,29 @@
       today: normalizeCount(data && data.today),
       total: normalizeCount(data && data.total),
       postsToday: normalizeCount(data && data.postsToday),
-      commentsToday: normalizeCount(data && data.commentsToday)
+      commentsToday: normalizeCount(data && data.commentsToday),
+      gaps: data && data.gaps ? normalizeGaps(data) : null
     };
+    rememberHistory(key, state.blogCounts[key].today);
   }
 
   // 이미 보이는 숫자에서 새 숫자로 올린다. 집계 중으로 바꾸면 릴이 지워져 0부터 다시 센다.
+  function countReloadShouldSpin() {
+    return !!(state.countIconHold || state.loading || state.countRefreshBusy || countsPending());
+  }
+
+  function syncCountReloadSpin() {
+    setCountReloadBusy(countReloadShouldSpin());
+  }
+
+  function releaseCountIconHold() {
+    if (state.loading || countsPending()) return;
+    state.countIconHold = false;
+    syncCountReloadSpin();
+  }
+
   function refreshLiveCounts() {
-    if (state.countRefreshBusy || state.loading || !state.ready || countsPending()) return;
+    if (state.countRefreshBusy || state.loading || state.countIconHold || !state.ready || countsPending()) return;
     if (document.body.classList.contains("is-booting")) return;
     var keys = [];
     state.characters.forEach(function (character) {
@@ -1292,14 +1600,14 @@
     if (!keys.length) return;
     var gen = state.countRefreshGen;
     state.countRefreshBusy = true;
-    setCountReloadBusy(true);
+    syncCountReloadSpin();
     var left = keys.length;
     function finish() {
       left -= 1;
       if (left > 0) return;
       state.countRefreshBusy = false;
-      setCountReloadBusy(false);
-      if (gen !== state.countRefreshGen || state.loading) return;
+      syncCountReloadSpin();
+      if (gen !== state.countRefreshGen || state.loading || state.countIconHold) return;
       applyLiveCounts(null);
     }
     keys.forEach(function (key) {
@@ -1383,7 +1691,7 @@
 
   // 첫 조회는 서버가 준 10분 캐시를 쓴다. 정각 갱신만 서버를 다시 치고 그 결과를 캐시에 넣는다.
   function fetchCounts(key, cacheMode) {
-    return fetch("profile.php?view=counts&blog=" + encodeURIComponent(key), {
+    return fetch("profile.php?view=counts&window=24h&blog=" + encodeURIComponent(key), {
       credentials: "same-origin",
       cache: cacheMode || "default",
       headers: { "Accept": "application/json" }
@@ -1401,6 +1709,12 @@
       });
     });
     var gen = state.countRefreshGen;
+    if (!pending.length) {
+      releaseCountIconHold();
+      return;
+    }
+    syncCountReloadSpin();
+    var left = pending.length;
     pending.forEach(function (key) {
       fetchCounts(key, "default")
         .then(function (response) {
@@ -1416,6 +1730,11 @@
           if (gen !== state.countRefreshGen) return;
           state.blogCounts[key] = { status: "fail" };
           applyLiveCounts(key);
+        })
+        .then(function () {
+          left -= 1;
+          if (left > 0 || gen !== state.countRefreshGen) return;
+          releaseCountIconHold();
         });
     });
   }
@@ -1453,7 +1772,7 @@
       else {
         fadeCount(num);
         num.removeAttribute("aria-busy");
-        showHostedCount(num, today);
+        showCountOrGap(num, today, data, "today");
       }
     }
     if (totalEl) {
@@ -1467,7 +1786,7 @@
       } else {
         var revealTotal = totalEl.getAttribute("aria-busy") === "true" || !!totalEl.querySelector(".skeleton");
         totalEl.removeAttribute("aria-busy");
-        showHostedCount(totalEl, total, "전체 ");
+        showCountOrGap(totalEl, total, data, "total", "전체 ");
         if (revealTotal) playCountFade(totalEl.querySelector(".odometer"));
       }
     }
@@ -1518,6 +1837,8 @@
       applyVisitorBlog(block, key);
       wrap.appendChild(block);
     });
+    wrap.appendChild(sparkHost(character));
+    wrap.appendChild(partialHost(character));
     return wrap;
   }
 
@@ -1684,6 +2005,12 @@
     var basis = document.getElementById("statsBasis");
     if (updated) updated.textContent = state.loadedAt ? "화면 갱신 " + formatWhen(state.loadedAt) : "화면 갱신 —";
     if (basis) basis.textContent = state.statsUpdatedAt ? "통계 기준 " + formatWhen(state.statsUpdatedAt) : "통계 기준 —";
+    var partialNote = document.getElementById("visitorPartial");
+    if (partialNote) {
+      var anyPartial = !figuresWait && ok.some(function (row) { return row.visitorPartial; });
+      partialNote.hidden = !anyPartial;
+      partialNote.textContent = anyPartial ? "일부 블로그는 오늘·전체 합에 빠졌습니다." : "";
+    }
   }
 
   function summedVisitors(rows, field) {
@@ -1900,27 +2227,48 @@
       td.appendChild(countSkeleton("sk-count"));
       return td;
     }
-    var value = data && data.status === "ok" ? data[field] : null;
-    td.textContent = formatNumber(value);
+    paintStatCell(td);
     return td;
   }
 
+  function statCountNode(data, field) {
+    var todayField = field === "posts" ? "postsToday" : field === "comments" ? "commentsToday" : "";
+    var value = data && data.status === "ok" ? data[field] : null;
+    if (value == null) return h("span", { class: "count-gap", text: gapText(data, field) });
+    if (!todayField) return document.createTextNode(formatNumber(value));
+    var today = data[todayField];
+    var showPlus = typeof today === "number" && today > 0 && today <= value;
+    var wrap = h("span", { class: "count-pair" });
+    wrap.appendChild(document.createTextNode(formatNumber(showPlus ? value - today : value)));
+    if (showPlus) {
+      var label = field === "posts" ? "글" : "댓글";
+      wrap.appendChild(h("span", {
+        class: "count-plus",
+        title: "최근 24시간 동안 올라온 " + label + " " + formatNumber(today)
+      }, h("span", { class: "count-plus-sign", "aria-hidden": "true", text: "+" }), formatNumber(today)));
+    } else if (today == null && sideGapText(data, todayField)) {
+      wrap.appendChild(h("span", { class: "count-gap", text: sideGapText(data, todayField) }));
+    }
+    return wrap;
+  }
+
+  function paintStatCell(td) {
+    var key = td.getAttribute("data-blog-key");
+    var field = td.getAttribute("data-blog-field");
+    var data = key && state.blogCounts[key];
+    var loading = !!(key && (countsBlockPaint() || !data || data.status === "loading"));
+    if (loading) {
+      td.setAttribute("aria-busy", "true");
+      td.replaceChildren(countSkeleton("sk-count"));
+      return;
+    }
+    fadeCount(td);
+    td.removeAttribute("aria-busy");
+    td.replaceChildren(statCountNode(data, field));
+  }
+
   function paintStatsCells() {
-    document.querySelectorAll("#statsTable [data-blog-field]").forEach(function (td) {
-      var key = td.getAttribute("data-blog-key");
-      var field = td.getAttribute("data-blog-field");
-      var data = key && state.blogCounts[key];
-      var loading = !!(key && (countsBlockPaint() || !data || data.status === "loading"));
-      if (loading) {
-        td.setAttribute("aria-busy", "true");
-        td.replaceChildren(countSkeleton("sk-count"));
-        return;
-      }
-      fadeCount(td);
-      var value = data && data.status === "ok" ? data[field] : null;
-      td.removeAttribute("aria-busy");
-      td.textContent = formatNumber(value);
-    });
+    document.querySelectorAll("#statsTable [data-blog-field]").forEach(paintStatCell);
   }
 
   function renderStatsTable() {
@@ -1932,7 +2280,7 @@
       return;
     }
     var table = h("table", { class: "stats-table" });
-    table.appendChild(h("caption", { class: "sr-only", text: "캐릭터별 블로그 방문자와 글, 댓글" }));
+    table.appendChild(h("caption", { class: "sr-only", text: "캐릭터별 블로그 방문자, 글, 댓글, 최근 7일" }));
     table.appendChild(h("thead", null, h("tr", null,
       h("th", { text: "캐릭터" }),
       h("th", { text: "블로그" }),
@@ -1945,7 +2293,8 @@
     rows.forEach(function (character) {
       var blogs = character.ok ? blogsWithUrl(character) : [];
       var span = Math.max(1, blogs.length);
-      var nameCell = h("th", { scope: "row", text: character.ok ? character.name : "파싱 오류" });
+      var nameCell = h("th", { scope: "row" }, character.ok ? character.name : "파싱 오류");
+      if (character.ok) nameCell.appendChild(sparkHost(character));
       if (span > 1) nameCell.rowSpan = span;
       if (!blogs.length) {
         body.appendChild(h("tr", null, nameCell, h("td", { text: "없음" }), h("td", { class: "num", text: "—" }), h("td", { class: "num", text: "—" }), h("td", { class: "num", text: "—" }), h("td", { class: "num", text: "—" })));
@@ -1974,22 +2323,38 @@
     window.BotDashChart.render(options);
   }
 
-  function holdChart() {
-    var wrap = document.getElementById("chartWrap");
-    var empty = document.getElementById("chartEmpty");
-    if (empty) empty.hidden = true;
+  function renderWeek() {
+    window.BotDashChart.renderWeek();
+  }
+
+  function holdWrap(id) {
+    var wrap = document.getElementById(id);
     if (!wrap) return;
     wrap.hidden = false;
     wrap.classList.add("is-pending");
     wrap.setAttribute("aria-busy", "true");
+  }
+
+  function holdChart() {
+    var empty = document.getElementById("chartEmpty");
+    if (empty) empty.hidden = true;
+    var weekEmpty = document.getElementById("weekEmpty");
+    if (weekEmpty) weekEmpty.hidden = true;
+    holdWrap("chartWrap");
+    holdWrap("weekWrap");
     if (state.chart && state.chart.destroy) {
       state.chart.destroy();
       state.chart = null;
+    }
+    if (state.weekChart && state.weekChart.destroy) {
+      state.weekChart.destroy();
+      state.weekChart = null;
     }
   }
 
   function showChart(options) {
     var wrap = document.getElementById("chartWrap");
+    var week = document.getElementById("weekWrap");
     if (countsPending()) {
       holdChart();
       return;
@@ -1998,7 +2363,12 @@
       wrap.classList.remove("is-pending");
       wrap.removeAttribute("aria-busy");
     }
+    if (week) {
+      week.classList.remove("is-pending");
+      week.removeAttribute("aria-busy");
+    }
     renderChart(options);
+    renderWeek();
   }
 
 
@@ -2076,6 +2446,12 @@
     document.querySelectorAll("[data-delta]").forEach(function (node) {
       var character = findById(node.getAttribute("data-delta"));
       if (character) paintDelta(node, character);
+    });
+    document.querySelectorAll("[data-spark]").forEach(function (el) {
+      paintSpark(el, findById(el.getAttribute("data-spark")));
+    });
+    document.querySelectorAll("[data-partial]").forEach(function (el) {
+      paintPartial(el, findById(el.getAttribute("data-partial")));
     });
     document.querySelectorAll("[data-stat-today]").forEach(function (el) {
       var character = findById(el.getAttribute("data-stat-today"));
@@ -2286,9 +2662,14 @@
       else setHostedOdometer(dd, pair[1]);
       grid.appendChild(h("div", null, h("dt", { text: pair[0] }), dd));
     });
-    var nodes = [grid, deltaNode(character), h("h3", { text: "소개" }), h("p", { class: "intro", text: character.intro || "소개가 없습니다." })];
+    var nodes = [grid, sparkHost(character), partialHost(character), deltaNode(character), h("h3", { text: "소개" }), h("p", { class: "intro", text: character.intro || "소개가 없습니다." })];
     nodes.forEach(function (node) { if (node) panel.appendChild(node); });
     var meta = h("dl", { class: "meta-list" });
+    var birthText = formatBirth(character.birthdate);
+    var birthValue = birthText
+      ? h("dd", null, h("time", { datetime: character.birthdate, text: birthText }))
+      : h("dd", { text: "—" });
+    meta.appendChild(h("div", null, h("dt", { text: "생년월일" }), birthValue));
     [["파일", character.fileName], ["아이디", character.id], ["통계 출처", character.statsSource || "마크다운"]].forEach(function (pair) {
       meta.appendChild(h("div", null, h("dt", { text: pair[0] }), h("dd", { text: pair[1] || "—" })));
     });
@@ -2448,6 +2829,7 @@
           h("p", { class: "eyebrow", text: character.id }),
           h(page ? "h1" : "h2", { id: "detailTitle", text: character.name }),
           character.nickname ? h("p", { class: "card-nick", text: character.nickname }) : null,
+          birthLine(character),
           h("span", { class: "badge badge-" + statusClass(character.status), text: character.status || "미정" })
         )
       ),
@@ -2643,8 +3025,10 @@
     if (state.loading) return;
     state.countRefreshGen += 1;
     state.blogCounts = {};
+    state.countIconHold = true;
     state.loading = true;
     setLoading(true);
+    syncCountReloadSpin();
     if (state.ready) paintLivePlaceholders();
     try {
       if (typeof CharacterParser === "undefined") throw new Error("parser.js를 불러오지 못했습니다.");
@@ -2662,6 +3046,7 @@
     }
     try { await warmThumbs(thumbKeysFor(state.characters)); } catch (error) {}
     render({ refreshModal: true, rebuildCards: true });
+    releaseCountIconHold();
     refreshThumbs();
     if (!state.entryConsumed) {
       state.entryConsumed = true;

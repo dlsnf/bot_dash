@@ -135,6 +135,8 @@
       nickname: "",
       status: "미정",
       image: "",
+      birthdate: "",
+      gender: "",
       intro: "",
       todayVisitors: null,
       yesterdayVisitors: null,
@@ -165,6 +167,25 @@
 
   function cleanUrl(raw) {
     return String(raw || "").replace(/[),.\]]+$/, "");
+  }
+
+  // 1993-02-19 만 받는다. 없는 날짜는 빈 문자열로 둔다.
+  function parseBirth(value) {
+    var matched = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || "").trim());
+    if (!matched) return "";
+    var year = Number(matched[1]);
+    var month = Number(matched[2]);
+    var day = Number(matched[3]);
+    var date = new Date(Date.UTC(year, month - 1, day));
+    if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return "";
+    return matched[1] + "-" + matched[2] + "-" + matched[3];
+  }
+
+  function parseGender(value) {
+    var text = String(value || "").trim();
+    if (text === "여자" || text === "여성") return "female";
+    if (text === "남자" || text === "남성") return "male";
+    return "";
   }
 
   // "네이버 … https://blog.naver.com/id / 티스토리 …" 한 줄을 블로그 목록으로 나눈다.
@@ -240,6 +261,8 @@
     character.id = String(fileName || "").replace(/\.md$/i, "");
     character.name = koreanName || givenName || heading;
     character.nickname = fieldValue(fields, "별명");
+    character.birthdate = parseBirth(fieldValue(fields, "생년월일"));
+    character.gender = parseGender(fieldValue(fields, "성별"));
     if (!character.name) return fail(fileName, "이름(name)이 없습니다.");
     if (!character.id) return fail(fileName, "아이디를 만들 수 없습니다.");
     var intro = fieldValue(fields, "적용 컨셉") || fieldValue(fields, "특이사항");
@@ -278,6 +301,8 @@
       character.id = front.id || String(fileName || "").replace(/\.md$/i, "");
       character.name = front.name || "";
       character.nickname = front.nickname || "";
+      character.birthdate = parseBirth(front.birthdate || "");
+      character.gender = parseGender(front.gender || "");
       character.status = front.status || "미정";
       character.image = front.image || "";
       if (!character.name) return fail(fileName, "이름(name)이 없습니다.");

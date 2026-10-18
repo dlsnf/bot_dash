@@ -2,6 +2,7 @@
 characters/
 characters/**/*.md
 data/stats.json
+data/history.json
 js/config.js
 *.local
 .env

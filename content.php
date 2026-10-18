@@ -1,7 +1,7 @@
 <?php
 /**
  * 로그인한 브라우저만 캐릭터 마크다운과 stats.json 을 읽게 한다.
- * 주소의 f 는 characters/이름.md 또는 data/stats.json 만 허용한다.
+ * 주소의 f 는 characters/이름.md, data/stats.json, data/history.json 만 허용한다.
  */
 ini_set("display_errors", "0");
 header("X-Robots-Tag: noindex, nofollow, noarchive, nosnippet");
@@ -16,8 +16,8 @@ function botdash_content_deny($status) {
 
 if (!botdash_logged_in()) botdash_content_deny(401);
 $rel = isset($_GET["f"]) ? (string) $_GET["f"] : "";
-if ($rel === "data/stats.json") {
-    $path = __DIR__ . "/data/stats.json";
+if ($rel === "data/stats.json" || $rel === "data/history.json") {
+    $path = __DIR__ . "/" . $rel;
     $type = "application/json; charset=utf-8";
 } elseif (preg_match('/^characters\/[A-Za-z0-9_-]+\.md$/', $rel)) {
     $path = __DIR__ . "/" . $rel;
