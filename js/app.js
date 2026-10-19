@@ -1689,7 +1689,7 @@
     armCountRefresh(false);
   }
 
-  // 첫 조회는 서버가 준 10분 캐시를 쓴다. 정각 갱신만 서버를 다시 치고 그 결과를 캐시에 넣는다.
+  // 첫 조회는 서버가 준 10분 캐시를 쓴다. 정각 갱신만 서버를 다시 친다.
   function fetchCounts(key, cacheMode) {
     return fetch("profile.php?view=counts&window=24h&blog=" + encodeURIComponent(key), {
       credentials: "same-origin",
@@ -3010,12 +3010,12 @@
 
   function setLoading(loading) {
     var refresh = document.getElementById("refreshBtn");
-    var exp = document.getElementById("exportBtn");
     if (refresh) {
       refresh.disabled = loading;
       var mark = refresh.querySelector("i");
       if (mark) mark.classList.toggle("fa-spin", loading);
     }
+    var exp = document.getElementById("exportBtn");
     if (exp) exp.disabled = loading || !state.ready;
     var grid = document.getElementById("cardGrid");
     if (grid) grid.setAttribute("aria-busy", loading ? "true" : "false");
@@ -3121,6 +3121,8 @@
     watchCardColumns();
     document.getElementById("logoutBtn").addEventListener("click", logoutUser);
     document.getElementById("refreshBtn").addEventListener("click", loadAndRender);
+    var topRefresh = document.getElementById("topRefreshBtn");
+    if (topRefresh) topRefresh.addEventListener("click", function () { location.reload(); });
     var countReload = document.getElementById("countReload");
     if (countReload) countReload.addEventListener("click", refreshLiveCounts);
     document.getElementById("exportBtn").addEventListener("click", exportData);

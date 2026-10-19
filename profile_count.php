@@ -144,32 +144,72 @@ function naver_post_times($list, $rss) {
     return $times;
 }
 
-function tistory_count_written($items, $now, &$count) {
+function as_count($value) {
+    if (is_int($value)) return $value < 0 ? null : $value;
+    if (is_string($value) && preg_match('/^\d{1,12}$/', $value)) return (int) $value;
+    return null;
+}
+
+function tistory_walk_comments($items, $now, &$nodes, &$today, &$todayKnown) {
     foreach ($items as $item) {
-        if (!is_array($item) || !isset($item["written"]) || !is_string($item["written"])) return false;
-        $inside = within_24h($item["written"], $now);
-        if ($inside === null) return false;
-        if ($inside) $count += 1;
-        if (!isset($item["children"])) continue;
+        if (!is_array($item)) return false;
+        $nodes += 1;
+        if (!isset($item["written"]) || !is_string($item["written"])) {
+            $todayKnown = false;
+        } else {
+            $inside = within_24h($item["written"], $now);
+            if ($inside === null) $todayKnown = false;
+            elseif ($inside) $today += 1;
+        }
+        if (!array_key_exists("children", $item)) continue;
         if (!is_array($item["children"])) return false;
-        if (!tistory_count_written($item["children"], $now, $count)) return false;
+        if (!tistory_walk_comments($item["children"], $now, $nodes, $today, $todayKnown)) return false;
     }
     return true;
 }
 
-function tistory_comment_window($json, $now = null) {
+function tistory_comment_census($json, $now = null) {
     $data = json_decode((string) $json, true);
     if (!is_array($data) || !isset($data["data"]) || !is_array($data["data"])) return null;
     $payload = $data["data"];
     if (!isset($payload["items"]) || !is_array($payload["items"]) || !array_key_exists("isLast", $payload)) return null;
-    $count = 0;
-    if (!tistory_count_written($payload["items"], $now, $count)) return null;
+    $nodes = 0;
+    $today = 0;
+    $todayKnown = true;
+    if (!tistory_walk_comments($payload["items"], $now, $nodes, $today, $todayKnown)) return null;
     $next = null;
     if (!$payload["isLast"]) {
         if (!isset($payload["nextId"]) || !preg_match('/^\d{1,12}$/', (string) $payload["nextId"])) return null;
         $next = (string) $payload["nextId"];
     }
-    return array($count, (bool) $payload["isLast"], $next);
+    return array(
+        "nodes" => $nodes,
+        "today" => $todayKnown ? $today : null,
+        "isLast" => (bool) $payload["isLast"],
+        "next" => $next
+    );
+}
+
+function tistory_comment_window($json, $now = null) {
+    $census = tistory_comment_census($json, $now);
+    if ($census === null || $census["today"] === null) return null;
+    return array($census["today"], $census["isLast"], $census["next"]);
+}
+
+/**
+ * 목록에 찍힌 댓글 수보다 댓글 API가 더 많이 세면 그 차이만 더한다.
+ * 블로그 주인 댓글이 목록 숫자에서 빠져 있을 때의 차이다.
+ * 같거나 더 적으면 목록 숫자를 그대로 둔다.
+ */
+function tistory_apply_hidden_comments($base, $spans, $full) {
+    if (!is_int($base) || $base < 0 || !is_array($spans) || !is_array($full)) return $base;
+    $extra = 0;
+    foreach ($full as $id => $nodes) {
+        $key = (string) $id;
+        if (!array_key_exists($key, $spans) || !is_int($nodes) || !is_int($spans[$key])) continue;
+        if ($nodes > $spans[$key]) $extra += $nodes - $spans[$key];
+    }
+    return $base + $extra;
 }
 
 function naver_comment_count($html) {
@@ -177,6 +217,97 @@ function naver_comment_count($html) {
     if (preg_match('/\\\\"commentCount\\\\"\s*:\s*(\d+)/', $html, $matched)) return (int) $matched[1];
     if (preg_match('/"commentCount"\s*:\s*(\d+)/', $html, $matched)) return (int) $matched[1];
     return null;
+}
+
+function naver_comment_decode($body) {
+    $text = trim((string) $body);
+    if ($text === "") return null;
+    if ($text[0] !== "{" && $text[0] !== "[") {
+        $start = strpos($text, "(");
+        $end = strrpos($text, ")");
+        if ($start === false || $end === false || $end <= $start) return null;
+        $text = substr($text, $start + 1, $end - $start - 1);
+    }
+    $data = json_decode($text, true);
+    if (!is_array($data) || empty($data["success"]) || !isset($data["result"]) || !is_array($data["result"])) return null;
+    return $data["result"];
+}
+
+function naver_comment_take($items, &$seen, &$listed, &$today, &$todayKnown, $now) {
+    if (!is_array($items)) return false;
+    foreach ($items as $item) {
+        if (!is_array($item)) return false;
+        $no = isset($item["commentNo"]) ? (string) $item["commentNo"] : "";
+        $fresh = ($no === "" || !isset($seen[$no]));
+        if ($no !== "") $seen[$no] = true;
+        if ($fresh && empty($item["deleted"]) && empty($item["blind"]) && empty($item["hiddenByCleanbot"])) {
+            $listed += 1;
+            $raw = isset($item["regTime"]) && is_string($item["regTime"]) ? $item["regTime"] : "";
+            $inside = within_24h($raw, $now);
+            if ($inside === null) $todayKnown = false;
+            elseif ($inside) $today += 1;
+        }
+        if (!array_key_exists("replyList", $item) || $item["replyList"] === null) continue;
+        if (!is_array($item["replyList"])) return false;
+        if (!naver_comment_take($item["replyList"], $seen, $listed, $today, $todayKnown, $now)) return false;
+    }
+    return true;
+}
+
+function naver_comment_census($body, $now = null) {
+    $result = naver_comment_decode($body);
+    if ($result === null || !isset($result["commentList"]) || !is_array($result["commentList"])) return null;
+    $listed = 0;
+    $today = 0;
+    $todayKnown = true;
+    $seen = array();
+    if (!naver_comment_take($result["commentList"], $seen, $listed, $today, $todayKnown, $now)) return null;
+    $reported = null;
+    if (isset($result["count"]) && is_array($result["count"]) && array_key_exists("total", $result["count"])) {
+        $reported = as_count($result["count"]["total"]);
+    }
+    $page = 1;
+    $next = 0;
+    $rows = null;
+    if (isset($result["pageModel"]) && is_array($result["pageModel"])) {
+        $rows = as_count(isset($result["pageModel"]["totalRows"]) ? $result["pageModel"]["totalRows"] : null);
+        if (isset($result["pageModel"]["page"])) $page = (int) $result["pageModel"]["page"];
+        if (isset($result["pageModel"]["nextPage"])) $next = (int) $result["pageModel"]["nextPage"];
+    }
+    return array(
+        "reported" => $reported,
+        "rows" => $rows,
+        "listed" => $listed,
+        "today" => $todayKnown ? $today : null,
+        "hasNext" => $next > $page
+    );
+}
+
+/**
+ * 글 페이지의 댓글 수가 주인 댓글을 빼면, 목록을 끝까지 봤을 때의 개수가 더 크다.
+ * 그 더 큰 수를 쓰고, 24시간 개수도 주인 댓글을 넣어 센다.
+ * 목록이 끝나지 않았으면 네이버가 알려 준 합계만 믿고 오늘 수는 비운다.
+ */
+function naver_comment_sum($pages, $done) {
+    if (!is_array($pages) || !$pages) return null;
+    $reported = null;
+    $listed = 0;
+    $today = 0;
+    $todayKnown = true;
+    foreach ($pages as $page) {
+        if (!is_array($page) || !isset($page["listed"]) || !is_int($page["listed"])) return null;
+        $listed += $page["listed"];
+        if ($reported === null && isset($page["reported"]) && is_int($page["reported"])) $reported = $page["reported"];
+        if (!isset($page["today"]) || !is_int($page["today"])) $todayKnown = false;
+        else $today += $page["today"];
+    }
+    $total = $reported;
+    if ($done && $listed > (is_int($total) ? $total : -1)) $total = $listed;
+    if (!is_int($total)) return null;
+    return array(
+        "total" => $total,
+        "today" => ($done && $todayKnown) ? $today : null
+    );
 }
 
 function rss_posts_on_day($xml, $now = null) {

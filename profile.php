@@ -483,6 +483,90 @@ function naver_visitor_counts($status, $body) {
     );
 }
 
+function naver_blog_no($status, $body) {
+    if ($status !== 200 || $body === "") return "";
+    $data = json_decode($body, true);
+    if (!is_array($data) || empty($data["result"]) || !is_array($data["result"])) return "";
+    $no = isset($data["result"]["blogNo"]) ? $data["result"]["blogNo"] : null;
+    if (is_int($no)) $no = (string) $no;
+    if (!is_string($no) || !preg_match('/^\d{1,12}$/', $no)) return "";
+    return $no;
+}
+
+function naver_comment_url($blogNo, $logNo, $page) {
+    return "https://apis.naver.com/commentBox/cbox/web_naver_list_jsonp.json"
+        . "?ticket=blog&templateId=default&pool=cbox9&lang=ko&country=KR"
+        . "&objectId=" . rawurlencode($blogNo . "_201_" . $logNo)
+        . "&groupId=" . rawurlencode($blogNo)
+        . "&pageSize=100&listType=OBJECT&pageType=more&page=" . (int) $page
+        . "&initialize=true&replyPageSize=100&showReply=true";
+}
+
+function naver_comment_allow($blogNo, $logNo) {
+    $objectId = $blogNo . "_201_" . $logNo;
+    return function ($url) use ($blogNo, $objectId) {
+        if (host_of($url) !== "apis.naver.com") return false;
+        $parts = parse_url($url);
+        if (!is_array($parts)) return false;
+        $path = isset($parts["path"]) ? $parts["path"] : "";
+        if ($path !== "/commentBox/cbox/web_naver_list_jsonp.json") return false;
+        $query = array();
+        if (!empty($parts["query"])) parse_str($parts["query"], $query);
+        if (!isset($query["ticket"]) || $query["ticket"] !== "blog") return false;
+        if (!isset($query["objectId"]) || $query["objectId"] !== $objectId) return false;
+        if (!isset($query["groupId"]) || (string) $query["groupId"] !== (string) $blogNo) return false;
+        if (!isset($query["page"]) || !preg_match('/^[1-9]\d{0,2}$/', (string) $query["page"])) return false;
+        return true;
+    };
+}
+
+function naver_comment_extras($blogId, $blogNo, $counts) {
+    $bags = array();
+    if (!preg_match('/^\d{1,12}$/', (string) $blogNo)) return array();
+    $pending = array();
+    foreach ($counts as $logNo => $count) {
+        $logNo = (string) $logNo;
+        if (!is_int($count) || $count <= 0 || !preg_match('/^\d{1,16}$/', $logNo)) continue;
+        $pending[$logNo] = 1;
+        $bags[$logNo] = array("pages" => array(), "done" => false);
+    }
+    for ($round = 0; $round < 5 && $pending; $round++) {
+        $jobs = array();
+        $order = array();
+        foreach ($pending as $logNo => $page) {
+            $jobs[] = array(
+                "url" => naver_comment_url($blogNo, $logNo, $page),
+                "limit" => BLOG_HTML_LIMIT,
+                "allow" => naver_comment_allow($blogNo, $logNo),
+                "headers" => array("Referer: https://m.blog.naver.com/" . rawurlencode($blogId) . "/" . rawurlencode($logNo)),
+                "reject" => true,
+                "timeout" => 6,
+                "decode" => true,
+                "ua" => tistory_browser()
+            );
+            $order[] = $logNo;
+        }
+        $next = array();
+        foreach (fetch_urls($jobs) as $index => $page) {
+            $logNo = $order[$index];
+            if (!isset($bags[$logNo]) || $page[0] !== 200 || $page[1] === "") continue;
+            $census = naver_comment_census($page[1]);
+            if ($census === null) continue;
+            $bags[$logNo]["pages"][] = $census;
+            if (empty($census["hasNext"])) $bags[$logNo]["done"] = true;
+            else $next[$logNo] = $pending[$logNo] + 1;
+        }
+        $pending = $next;
+    }
+    $out = array();
+    foreach ($bags as $logNo => $bag) {
+        if (!$bag["pages"]) continue;
+        $merged = naver_comment_sum($bag["pages"], $bag["done"]);
+        if ($merged !== null) $out[$logNo] = $merged;
+    }
+    return $out;
+}
+
 function tistory_browser() {
     return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
 }
@@ -571,6 +655,7 @@ function naver_counts($id) {
     list($status, $body) = $wave[0];
     list($rssStatus, $xml) = $wave[1];
     $visitors = naver_visitor_counts($wave[2][0], $wave[2][1]);
+    $blogNo = naver_blog_no($wave[2][0], $wave[2][1]);
     if ($status !== 200 || !preg_match('/"totalCount"\s*:\s*"?(\d+)/', $body, $totalMatch)) {
         return naver_count_row(null, null, $visitors[0], $visitors[1], null, null, array());
     }
@@ -614,8 +699,8 @@ function naver_counts($id) {
     }
     $pages = fetch_urls($jobs);
     $sum = 0;
-    $commentsToday = 0;
-    $commentsKnown = true;
+    $pageCounts = array();
+    $htmlFresh = array();
     foreach ($pages as $index => $page) {
         list($pageStatus, $html) = $page;
         $count = naver_comment_count($html);
@@ -625,10 +710,11 @@ function naver_counts($id) {
                 "commentsToday" => "unread"
             ));
         }
+        $logNo = $logNos[$index];
+        $pageCounts[$logNo] = $count;
         $sum += $count;
         if ($count === 0) continue;
         // 글이 24시간 안이면 그 글의 댓글도 그 안이다. 시각이 없다고 0으로 두지 않는다.
-        $logNo = $logNos[$index];
         $postRaw = isset($postTimes[$logNo]) ? $postTimes[$logNo] : "";
         $fresh = comments_on_fresh_post($postRaw, $count);
         if ($fresh === null) {
@@ -637,6 +723,23 @@ function naver_counts($id) {
                 $fresh = count_days($html, '/u_cbox_date[^>]*>\s*([^<]{6,40})</i');
             }
         }
+        $htmlFresh[$logNo] = $fresh;
+    }
+    // 글 페이지 숫자에 주인 댓글이 빠져 있으면 댓글 목록의 더 큰 합으로 올린다.
+    $extras = naver_comment_extras($id, $blogNo, $pageCounts);
+    $commentsToday = 0;
+    $commentsKnown = true;
+    foreach ($pageCounts as $logNo => $count) {
+        if (isset($extras[$logNo]) && is_int($extras[$logNo]["total"]) && $extras[$logNo]["total"] > $count) {
+            $sum += $extras[$logNo]["total"] - $count;
+            $count = $extras[$logNo]["total"];
+        }
+        if ($count === 0) continue;
+        if (isset($extras[$logNo]) && is_int($extras[$logNo]["today"])) {
+            $commentsToday += $extras[$logNo]["today"];
+            continue;
+        }
+        $fresh = array_key_exists($logNo, $htmlFresh) ? $htmlFresh[$logNo] : null;
         if ($fresh === null) {
             $commentsKnown = false;
             continue;
@@ -668,7 +771,7 @@ function naver_count_row($posts, $comments, $today, $total, $postsToday, $commen
 }
 
 function tistory_comments($host, $postTotal) {
-    if ($postTotal === 0) return array(0, null);
+    if ($postTotal === 0) return array(0, null, array());
     $allow = function ($url) use ($host) {
         if (host_of($url) !== $host) return false;
         $path = parse_url($url, PHP_URL_PATH);
@@ -684,9 +787,9 @@ function tistory_comments($host, $postTotal) {
     $counts = array();
     $browser = tistory_browser();
     list($status, $html) = fetch_url("https://" . $host . "/", BLOG_HTML_LIMIT, $allow, array(), true, 6, true, $browser);
-    if ($status !== 200 || $html === "") return array(null, "unread");
+    if ($status !== 200 || $html === "") return array(null, "unread", array());
     $added = tistory_comment_page($html, $counts);
-    if ($added === null) return array(null, "unread");
+    if ($added === null) return array(null, "unread", array());
     $stop = null;
     if ($added > 0 && tistory_has_next_page($html, 1)) {
         $jobs = array();
@@ -729,8 +832,8 @@ function tistory_comments($host, $postTotal) {
     }
     // 글 수보다 적게 보면 합이 전체인 것처럼 보이지 않게 비운다.
     $sum = tistory_comment_total($counts, is_int($postTotal) ? $postTotal : null);
-    if ($sum === null) return array(null, $stop ? $stop : "short");
-    return array($sum, null);
+    if ($sum === null) return array(null, $stop ? $stop : "short", array());
+    return array($sum, null, $counts);
 }
 
 function tistory_posts_today($host, $fetched = null) {
@@ -829,16 +932,18 @@ function tistory_comment_allow($host) {
 }
 
 function tistory_comments_today($host, $ids) {
-    if (!is_array($ids) || !$ids) return array(null, "unread");
-    if (count($ids) > 40) return array(null, "cap40");
+    $full = array();
+    if (!is_array($ids) || !$ids) return array(null, "unread", $full);
+    if (count($ids) > 40) return array(null, "cap40", $full);
     $allow = tistory_comment_allow($host);
     $pending = array();
     foreach ($ids as $id) {
         $id = (string) $id;
-        if (!preg_match('/^\d{1,12}$/', $id)) return array(null, "unread");
+        if (!preg_match('/^\d{1,12}$/', $id)) return array(null, "unread", $full);
         $pending[$id] = "";
     }
     $total = 0;
+    $running = array();
     for ($round = 0; $round < 5 && $pending; $round++) {
         $jobs = array();
         $order = array();
@@ -859,19 +964,23 @@ function tistory_comments_today($host, $ids) {
         }
         $next = array();
         foreach (fetch_urls($jobs) as $index => $page) {
-            if ($page[0] !== 200 || $page[1] === "") return array(null, "unread");
-            $parsed = tistory_comment_window($page[1]);
-            if ($parsed === null) return array(null, "unread");
-            $total += $parsed[0];
-            if ($parsed[1]) continue;
-            $start = $parsed[2];
-            if (!is_string($start) || isset($next[$order[$index]])) return array(null, "unread");
-            $next[$order[$index]] = $start;
+            $id = $order[$index];
+            if ($page[0] !== 200 || $page[1] === "") return array(null, "unread", $full);
+            $census = tistory_comment_census($page[1]);
+            if ($census === null) return array(null, "unread", $full);
+            $running[$id] = (isset($running[$id]) ? $running[$id] : 0) + $census["nodes"];
+            if ($census["isLast"]) $full[$id] = $running[$id];
+            if ($census["today"] === null) return array(null, "unread", $full);
+            $total += $census["today"];
+            if ($census["isLast"]) continue;
+            $start = $census["next"];
+            if (!is_string($start) || isset($next[$id])) return array(null, "unread", $full);
+            $next[$id] = $start;
         }
         $pending = $next;
     }
-    if ($pending) return array(null, "more");
-    return array($total, null);
+    if ($pending) return array(null, "more", $full);
+    return array($total, null, $full);
 }
 
 function tistory_live($host) {
@@ -932,8 +1041,11 @@ function tistory_live($host) {
         $commentsToday = 0;
         $postsTodayOut = 0;
     } else {
-        list($comments, $commentGap) = tistory_comments($host, $posts);
-        list($commentsToday, $todayGap) = tistory_comments_today($host, $entryIds);
+        list($comments, $commentGap, $spanCounts) = tistory_comments($host, $posts);
+        list($commentsToday, $todayGap, $fullCounts) = tistory_comments_today($host, $entryIds);
+        if (is_int($comments)) {
+            $comments = tistory_apply_hidden_comments($comments, is_array($spanCounts) ? $spanCounts : array(), is_array($fullCounts) ? $fullCounts : array());
+        }
         $postsTodayOut = $postsToday;
     }
     $gaps = array();
