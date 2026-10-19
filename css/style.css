@@ -467,7 +467,8 @@ button, input, select { font: inherit; color: inherit; }
 }
 .count-gap { color: var(--muted); font-size: 12px; font-weight: 700; }
 .visitor-blogs .spark,
-.visitor-blogs .visitor-partial { grid-column: 1 / -1; }
+.visitor-blogs .visitor-partial,
+.visitor-blogs .visitor-today { grid-column: 1 / -1; }
 .spark { display: flex; align-items: center; min-height: 28px; }
 .spark svg { display: block; width: 84px; height: 28px; }
 .spark polyline { fill: none; stroke: #8b9bff; stroke-width: 1.6; stroke-linejoin: round; stroke-linecap: round; }
@@ -651,6 +652,14 @@ button, input, select { font: inherit; color: inherit; }
 
 .visitor-blogs.is-single .visitor-num { font-size: 52px; }
 
+.visitor-today {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.2;
+  white-space: nowrap;
+}
 .visitor-label {
   display: block;
   min-width: 0;
@@ -659,6 +668,7 @@ button, input, select { font: inherit; color: inherit; }
   color: var(--muted);
   font-size: 13px;
   line-height: 1.2;
+  white-space: nowrap;
 }
 .visitor-paused {
   margin-left: 6px;
@@ -1301,7 +1311,8 @@ body[data-page="login"].auth-ready .login-shell { visibility: visible; }
   .card .card-nick { font-size: 16px; }
   .card .card-birth { font-size: 15px; }
   .card .badge { height: 28px; min-height: 28px; font-size: 14px; }
-  .card .visitor-label { font-size: 15px; }
+  .card .visitor-label,
+  .card .visitor-today { font-size: 15px; }
   .card .visitor-blogs.is-single .visitor-num { font-size: 68px; }
   .card .visitor-blogs:not(.is-single) .visitor-num { font-size: clamp(22px, 30cqi, 44px); }
   .card .delta { font-size: 17px; }

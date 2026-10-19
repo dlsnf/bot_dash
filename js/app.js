@@ -1,7 +1,7 @@
 /**
  * 봇대시 화면 로직.
  * 숫자 릴은 js/reel.js, 통계 그래프는 js/chart.js, 로그인은 js/login.js 에 있다.
- * 캐릭터 원본은 서버에서 만들지 않고, 로그인한 브라우저가 content.php 로 md와 stats.json을 읽어 그린다.
+ * 캐릭터 원본은 서버에서 만들지 않고, 로그인한 브라우저가 content.php 로 characters 폴더의 md와 stats.json을 읽어 그린다.
  */
 (function () {
   // 카운터 숫자가 올라가는 시간. 단위는 밀리초.
@@ -168,16 +168,38 @@
     return response.text();
   }
 
+  async function loadCharacterFiles(stamp) {
+    var text = await fetchText("content.php?list=characters&t=" + stamp);
+    var parsed = JSON.parse(text);
+    if (!Array.isArray(parsed)) throw new Error("형식");
+    var seen = {};
+    return parsed.map(function (file) {
+      return String(file).trim();
+    }).filter(function (file) {
+      if (!/^[A-Za-z0-9_-]+\.md$/.test(file) || seen[file]) return false;
+      seen[file] = true;
+      return true;
+    });
+  }
+
   // 파일 하나는 실패해도 나머지 카드를 계속 만든다.
   async function loadCharacters() {
-    var files = (DASHBOARD_CONFIG.characterFiles || []).map(function (file) {
-      return String(file).trim();
-    }).filter(Boolean);
     var stamp = Date.now();
     var notices = [];
     var statsDoc = null;
     if (location.protocol === "file:") {
-      notices.push("파일을 직접 열면 마크다운을 읽지 못합니다. 웹서버로 열어 주세요.");
+      state.characters = [];
+      state.history = {};
+      state.statsUpdatedAt = null;
+      state.loadedAt = new Date();
+      state.notices = ["파일을 직접 열면 마크다운을 읽지 못합니다. 웹서버로 열어 주세요."];
+      return;
+    }
+    var files;
+    try {
+      files = await loadCharacterFiles(stamp);
+    } catch (error) {
+      throw new Error("캐릭터 목록을 읽지 못했습니다.");
     }
     try {
       var statsText = await fetchText("content.php?f=" + encodeURIComponent("data/stats.json") + "&t=" + stamp);
@@ -1288,9 +1310,14 @@
     return storedToday(blogKey, dayKey);
   }
 
+  function blogHost(url) {
+    try { return new URL(url).hostname.toLowerCase(); } catch (error) { return ""; }
+  }
+
   function characterWeek(character) {
     var keys = weekKeys();
     var blogs = countableBlogs(character);
+    var todayKey = seoulDayKey(0);
     if (!blogs.length) return keys.map(function () { return null; });
     return keys.map(function (day) {
       var sum = 0;
@@ -1299,6 +1326,8 @@
         var key = countableBlogUrl(blogs[i].url);
         if (omitsDailyVisitors(state.blogCounts[key])) continue;
         var value = blogDayVisitors(key, day);
+        // 마감 기록이 생기기 전의 Blogger 날은 다른 블로그 합을 지우지 않는다.
+        if (value == null && day !== todayKey && blogspotName(blogHost(key)) !== "") continue;
         if (value == null) return null;
         counted += 1;
         sum += value;
@@ -1865,12 +1894,13 @@
       return h("p", { class: "visitor-note", text: "블로그 없음" });
     }
     var wrap = h("div", { class: "visitor-blogs" + (rows.length === 1 ? " is-single" : "") });
+    if (rows.length > 1) wrap.appendChild(h("p", { class: "visitor-today", text: "오늘" }));
     rows.forEach(function (row) {
       var blog = row.blog;
       var key = countableBlogUrl(blog.url) || safeUrl(blog.url) || blog.url;
       var block = h("div", { class: "visitor-blog", "data-visitor-blog": key },
         h("p", { class: "visitor-label" },
-          row.label + " · 오늘",
+          rows.length === 1 ? row.label + " · 오늘" : row.label,
           blog.paused ? pausedMark() : null
         ),
         h("p", { class: "visitor-num", "data-blog-today": "1", text: "…" }),
@@ -2086,7 +2116,7 @@
     var noData = state.characters.length === 0;
     var title = noData ? "등록된 캐릭터가 없습니다" : "조건에 맞는 캐릭터가 없습니다";
     var text = noData
-      ? "characters 폴더에 마크다운을 추가하고 config.js의 characterFiles에 파일명을 적어 주세요."
+      ? "characters 폴더에 영문 파일명의 마크다운을 넣어 주세요."
       : (state.queryRaw
         ? "‘" + state.queryRaw + "’ 검색 결과가 없습니다. 다른 단어로 찾아 보세요."
         : "이 필터에 해당하는 캐릭터가 없습니다.");
@@ -2449,7 +2479,7 @@
           pending = true;
           return;
         }
-        // Blogger는 전체 페이지뷰만 공개한다. 오늘 합에서 빠진 것으로 보지 않는다.
+        // 어제 마감 페이지뷰가 없는 Blogger는 오늘 합에서 뺀다.
         if (!omitsDailyVisitors(data)) {
           dailyBlogs += 1;
           if (data.status === "ok" && data.today != null) {
@@ -3075,7 +3105,6 @@
     if (state.ready) paintLivePlaceholders();
     try {
       if (typeof CharacterParser === "undefined") throw new Error("parser.js를 불러오지 못했습니다.");
-      if (!Array.isArray(DASHBOARD_CONFIG.characterFiles)) throw new Error("config.js의 characterFiles 목록을 확인해 주세요.");
       await loadCharacters();
     } catch (error) {
       state.characters = [];

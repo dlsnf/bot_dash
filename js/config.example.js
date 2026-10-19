@@ -13,8 +13,6 @@ const DASHBOARD_CONFIG = {
     lockMinutes: 10,
     sessionHours: 720
   },
-  // characters/ 기준 파일명. 새 캐릭터를 추가하면 여기에 적어 주세요.
-  characterFiles: [],
   defaultImage: "characters/images/default.svg",
   visitorThresholds: {
     high: 100,

@@ -16,26 +16,47 @@ function botdash_env_value($value) {
     return $value;
 }
 
+function botdash_env_path() {
+    $path = getenv("BOTDASH_ENV");
+    if (!is_string($path) || $path === "") $path = "/etc/bot_dash.env";
+    return $path;
+}
+
+function botdash_env_vars() {
+    $vars = array();
+    $path = botdash_env_path();
+    if (is_readable($path)) {
+        $lines = file($path, FILE_IGNORE_NEW_LINES);
+        if (is_array($lines)) {
+            foreach ($lines as $line) {
+                $line = trim($line);
+                if ($line === "" || $line[0] === "#") continue;
+                $eq = strpos($line, "=");
+                if ($eq === false) continue;
+                $key = trim(substr($line, 0, $eq));
+                if ($key === "") continue;
+                $vars[$key] = botdash_env_value(substr($line, $eq + 1));
+            }
+        }
+    }
+    foreach (array($_ENV, $_SERVER) as $source) {
+        if (!is_array($source)) continue;
+        foreach ($source as $key => $value) {
+            if (!is_string($key) || !is_string($value) || $value === "") continue;
+            if (strncmp($key, "BOTDASH_", 8) !== 0 && strncmp($key, "BLOGGER_", 8) !== 0) continue;
+            $vars[$key] = $value;
+        }
+    }
+    return $vars;
+}
+
 function botdash_load_secrets() {
     $envUser = getenv("BOTDASH_USER");
     $envPass = getenv("BOTDASH_PASSWORD");
     if (is_string($envUser) && $envUser !== "" && is_string($envPass) && $envPass !== "") {
         return array($envUser, $envPass);
     }
-    $path = getenv("BOTDASH_ENV");
-    if (!is_string($path) || $path === "") $path = "/etc/bot_dash.env";
-    if (!is_readable($path)) return array("", "");
-    $lines = file($path, FILE_IGNORE_NEW_LINES);
-    if (!is_array($lines)) return array("", "");
-    $vars = array();
-    foreach ($lines as $line) {
-        $line = trim($line);
-        if ($line === "" || $line[0] === "#") continue;
-        $eq = strpos($line, "=");
-        if ($eq === false) continue;
-        $key = trim(substr($line, 0, $eq));
-        $vars[$key] = botdash_env_value(substr($line, $eq + 1));
-    }
+    $vars = botdash_env_vars();
     $user = isset($vars["BOTDASH_USER"]) ? $vars["BOTDASH_USER"] : "";
     $pass = isset($vars["BOTDASH_PASSWORD"]) ? $vars["BOTDASH_PASSWORD"] : "";
     return array($user, $pass);

@@ -6,24 +6,30 @@
  * view=counts 는 {"posts","comments","today","total","postsToday","commentsToday"} 를 돌려준다.
  * 값은 정수이거나 null이다. postsToday, commentsToday 는 최근 24시간 동안 올라온 개수다.
  * null 인 칸은 gaps 에 이유를 붙인다. 오늘 방문자는 data/history.json 에 날짜마다 하나 남긴다.
- * Blogger 는 글·댓글과 전체 페이지뷰만 공개된다. today 는 null 이고 gaps.today 는 alltime 이다.
+ * Blogger 전체 페이지뷰는 계정 토큰이 있으면 API를, 없으면 공개 카운터를 쓴다.
+ * 오늘 페이지뷰는 data/blogger_totals.json 의 어제 마감 전체를 지금 전체에서 뺀 값이다.
+ * 어제 마감이 없으면 today 는 null 이고 gaps.today 는 alltime 이다.
  * 블로그 주소 외의 요청은 받지 않고, 받아 온 본문은 그대로 내보내지 않는다.
  */
-ini_set("display_errors", "0");
-header("X-Robots-Tag: noindex, nofollow, noarchive, nosnippet");
+if (!defined("BOTDASH_PROFILE_LIBRARY")) {
+    ini_set("display_errors", "0");
+    header("X-Robots-Tag: noindex, nofollow, noarchive, nosnippet");
+}
 require_once __DIR__ . "/auth.php";
 require_once __DIR__ . "/profile_count.php";
 // 세션 기본값이 no-cache 라서 Expires·Pragma 가 남으면 브라우저가 사진과 집계를 저장하지 않는다.
-if (session_status() !== PHP_SESSION_ACTIVE) {
-    session_cache_limiter("");
-}
-if (!botdash_logged_in()) {
-    http_response_code(401);
-    header("Content-Type: text/plain; charset=utf-8");
-    header_remove("Pragma");
-    header_remove("Expires");
-    header("Cache-Control: private, no-store");
-    exit;
+if (!defined("BOTDASH_PROFILE_LIBRARY")) {
+    if (session_status() !== PHP_SESSION_ACTIVE) {
+        session_cache_limiter("");
+    }
+    if (!botdash_logged_in()) {
+        http_response_code(401);
+        header("Content-Type: text/plain; charset=utf-8");
+        header_remove("Pragma");
+        header_remove("Expires");
+        header("Cache-Control: private, no-store");
+        exit;
+    }
 }
 
 const BLOG_HTML_LIMIT = 500000;
@@ -1100,6 +1106,176 @@ function blogger_stats_allow($name) {
     };
 }
 
+function fetch_form($url, $fields, $allow, $timeout = 8) {
+    if (!function_exists("curl_init") || !is_callable($allow) || !$allow($url)) return array(0, "");
+    $ch = curl_init($url);
+    if ($ch === false) return array(0, "");
+    curl_setopt_array($ch, array(
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_FOLLOWLOCATION => false,
+        CURLOPT_CONNECTTIMEOUT => 4,
+        CURLOPT_TIMEOUT => $timeout,
+        CURLOPT_PROTOCOLS => CURLPROTO_HTTPS,
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => http_build_query($fields),
+        CURLOPT_HTTPHEADER => array(
+            "Content-Type: application/x-www-form-urlencoded",
+            "Accept: application/json"
+        ),
+        CURLOPT_USERAGENT => "BotDash/1.0"
+    ));
+    $body = curl_exec($ch);
+    $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+    curl_close($ch);
+    if (!is_string($body)) return array(0, "");
+    return array($status, $body);
+}
+
+function blogger_google_allow($url) {
+    $host = host_of($url);
+    $path = parse_url($url, PHP_URL_PATH);
+    if (!is_string($path)) return false;
+    if ($host === "oauth2.googleapis.com") return $path === "/token";
+    if ($host !== "www.googleapis.com") return false;
+    if ($path === "/blogger/v3/blogs/byurl") return true;
+    return (bool) preg_match('#^/blogger/v3/blogs/\d{1,24}/pageviews$#', $path);
+}
+
+function blogger_access_token($set) {
+    if (!is_array($set) || empty($set["suffix"]) || !is_string($set["suffix"])) return "";
+    $path = cache_dir() . "/blogger-access-" . hash("sha256", $set["suffix"]);
+    if (is_file($path)) {
+        $raw = @file_get_contents($path);
+        $split = explode("\n", is_string($raw) ? $raw : "", 2);
+        if (count($split) === 2 && preg_match('/^\d+$/', $split[0]) && (int) $split[0] > time() + 60 && $split[1] !== "" && strpos($split[1], "\n") === false) {
+            return $split[1];
+        }
+    }
+    list($status, $body) = fetch_form("https://oauth2.googleapis.com/token", array(
+        "client_id" => $set["client_id"],
+        "client_secret" => $set["client_secret"],
+        "refresh_token" => $set["refresh_token"],
+        "grant_type" => "refresh_token"
+    ), "blogger_google_allow", 8);
+    if ($status !== 200 || $body === "" || $body[0] !== "{") return "";
+    $data = json_decode($body, true);
+    if (!is_array($data) || empty($data["access_token"]) || !is_string($data["access_token"])) return "";
+    if ($data["access_token"] === "" || strpos($data["access_token"], "\n") !== false) return "";
+    $ttl = 3000;
+    if (isset($data["expires_in"]) && is_numeric($data["expires_in"])) $ttl = (int) $data["expires_in"];
+    $expires = time() + max(0, $ttl);
+    $dir = cache_dir();
+    if (is_dir($dir) && is_writable($dir)) {
+        $tmp = $path . "." . getmypid() . ".tmp";
+        if (@file_put_contents($tmp, (string) $expires . "\n" . $data["access_token"], LOCK_EX) !== false) {
+            @chmod($tmp, 0600);
+            if (!@rename($tmp, $path)) @unlink($tmp);
+        }
+    }
+    return $data["access_token"];
+}
+
+function blogger_character_blog_map() {
+    $dir = __DIR__ . "/characters";
+    $map = array();
+    if (!is_dir($dir)) return $map;
+    $paths = glob($dir . "/*.md");
+    if (!is_array($paths)) return $map;
+    foreach ($paths as $path) {
+        $suffix = basename($path, ".md");
+        if (!preg_match('/^[A-Za-z0-9_]+$/', $suffix)) continue;
+        $text = @file_get_contents($path);
+        if (!is_string($text)) continue;
+        $names = blogger_character_blogs($text);
+        if ($names) $map[$suffix] = $names;
+    }
+    return $map;
+}
+
+function blogger_api_total($name) {
+    $sets = blogger_sets_for($name, blogger_apply_character_blogs(
+        blogger_credential_sets(botdash_env_vars()),
+        blogger_character_blog_map()
+    ));
+    $blogUrl = "https://" . $name . ".blogspot.com/";
+    foreach ($sets as $set) {
+        $access = blogger_access_token($set);
+        if ($access === "") continue;
+        list($status, $body) = fetch_url(
+            "https://www.googleapis.com/blogger/v3/blogs/byurl?url=" . rawurlencode($blogUrl),
+            100000,
+            "blogger_google_allow",
+            array("Authorization: Bearer " . $access, "Accept: application/json"),
+            true,
+            8,
+            true
+        );
+        $blogId = blogger_api_blog_id($status, $body);
+        if ($blogId === "") continue;
+        list($status, $body) = fetch_url(
+            "https://www.googleapis.com/blogger/v3/blogs/" . $blogId . "/pageviews?range=all",
+            100000,
+            "blogger_google_allow",
+            array("Authorization: Bearer " . $access, "Accept: application/json"),
+            true,
+            8,
+            true
+        );
+        $total = blogger_api_pageviews($status, $body);
+        if (is_int($total)) return $total;
+    }
+    return null;
+}
+
+function blogger_totals_path() {
+    return __DIR__ . "/data/blogger_totals.json";
+}
+
+function blogger_record_total($blog, $total) {
+    $total = count_or_null($total);
+    if (blog_kind($blog) !== "blogger" || !is_int($total)) return null;
+    $path = blogger_totals_path();
+    $dir = dirname($path);
+    if (!is_dir($dir) || !is_writable($dir)) return null;
+    $fh = @fopen($path, "c+");
+    if (!$fh) return null;
+    if (!flock($fh, LOCK_EX)) {
+        fclose($fh);
+        return null;
+    }
+    $raw = stream_get_contents($fh);
+    $data = json_decode(is_string($raw) ? $raw : "", true);
+    $clock = seoul_clock();
+    $stored = blogger_total_apply(is_array($data) ? $data : array(), $blog, $clock->format("Y-m-d"), $total, $clock);
+    $today = blogger_today_count($stored, $blog, $total, $clock);
+    $json = json_encode($stored, JSON_UNESCAPED_SLASHES);
+    if (is_string($json)) {
+        rewind($fh);
+        if (ftruncate($fh, 0)) {
+            fwrite($fh, $json);
+            fflush($fh);
+        }
+    }
+    flock($fh, LOCK_UN);
+    fclose($fh);
+    @chmod($path, 0600);
+    return $today;
+}
+
+function blogger_cached_counts($blog, $data) {
+    if (!is_array($data)) return $data;
+    $total = isset($data["total"]) ? $data["total"] : null;
+    if (is_string($total) && preg_match('/^\d{1,12}$/', $total)) $total = (int) $total;
+    if (!is_int($total)) return $data;
+    $today = blogger_record_total($blog, $total);
+    $data["today"] = $today;
+    if (!isset($data["gaps"]) || !is_array($data["gaps"])) $data["gaps"] = array();
+    if ($today === null) $data["gaps"]["today"] = "alltime";
+    else unset($data["gaps"]["today"]);
+    if (!$data["gaps"]) unset($data["gaps"]);
+    return $data;
+}
+
 function blogger_job($url, $allow, $timeout) {
     return array(
         "url" => $url,
@@ -1127,22 +1303,24 @@ function blogger_live($name) {
     $comments = blogger_feed_total($wave[3][0], $wave[3][1]);
     $postsToday = blogger_window_count($posts, blogger_feed_total($wave[2][0], $wave[2][1]));
     $commentsToday = blogger_window_count($comments, blogger_feed_total($wave[4][0], $wave[4][1]));
-    $pageviews = null;
+    $pageviews = blogger_api_total($name);
     $todayGap = "unread";
-    $statsUrl = ($wave[0][0] === 200) ? blogger_stats_url($wave[0][1], $name) : "";
-    if ($statsUrl !== "") {
-        $todayGap = "alltime";
-        list($status, $body) = fetch_url(
-            $statsUrl,
-            100000,
-            blogger_stats_allow($name),
-            array("Referer: https://" . $name . ".blogspot.com/"),
-            true,
-            6,
-            true,
-            tistory_browser()
-        );
-        $pageviews = blogger_stats_total($status, $body);
+    if (!is_int($pageviews)) {
+        $statsUrl = ($wave[0][0] === 200) ? blogger_stats_url($wave[0][1], $name) : "";
+        if ($statsUrl !== "") {
+            $todayGap = "alltime";
+            list($status, $body) = fetch_url(
+                $statsUrl,
+                100000,
+                blogger_stats_allow($name),
+                array("Referer: https://" . $name . ".blogspot.com/"),
+                true,
+                6,
+                true,
+                tistory_browser()
+            );
+            $pageviews = blogger_stats_total($status, $body);
+        }
     }
     $gaps = array("today" => $todayGap);
     if ($posts === null) $gaps["posts"] = "unread";
@@ -1180,6 +1358,7 @@ function blogger_photo_url($name, $large) {
     return blogger_html_image($html, $large);
 }
 
+if (!defined("BOTDASH_PROFILE_LIBRARY")) {
 $blog = isset($_GET["blog"]) ? trim((string) $_GET["blog"]) : "";
 $kind = blog_kind($blog);
 if ($kind === "") deny();
@@ -1188,6 +1367,14 @@ if (isset($_GET["view"]) && (string) $_GET["view"] === "counts") {
     $cached = read_cache("counts24", $blog, false, "json");
     if ($cached !== null) {
         $cachedData = json_decode($cached[1], true);
+        if ($kind === "blogger" && is_array($cachedData)) {
+            $cachedData = blogger_cached_counts($blog, $cachedData);
+            $body = json_encode($cachedData);
+            if (is_string($body)) {
+                record_blog_today($blog, array_key_exists("today", $cachedData) ? $cachedData["today"] : null);
+                send_body($cached[0], $body, 600);
+            }
+        }
         if (is_array($cachedData) && array_key_exists("today", $cachedData)) record_blog_today($blog, $cachedData["today"]);
         send_body($cached[0], $cached[1], 600);
     }
@@ -1215,7 +1402,14 @@ if (isset($_GET["view"]) && (string) $_GET["view"] === "counts") {
             "commentsToday" => "unread"
         ));
         $row = blogger_live($name);
-        send_counts($row[0], $row[1], $row[2], $row[3], $row[4], $row[5], $blog, isset($row[6]) ? $row[6] : array());
+        $gaps = isset($row[6]) && is_array($row[6]) ? $row[6] : array();
+        $today = null;
+        if (is_int($row[3])) {
+            $today = blogger_record_total($blog, $row[3]);
+            if ($today === null) $gaps["today"] = "alltime";
+            else unset($gaps["today"]);
+        }
+        send_counts($row[0], $row[1], $today, $row[3], $row[4], $row[5], $blog, $gaps);
     }
     $row = tistory_live(host_of($blog));
     send_counts($row[0], $row[1], $row[2], $row[3], $row[4], $row[5], $blog, isset($row[6]) ? $row[6] : array());
@@ -1278,3 +1472,4 @@ if ($imageStatus !== 200 || $type === "" || $bytes === "") deny();
 
 write_cache("image", $blog, $large, $type, $bytes, 3600);
 send_body($type, $bytes, 3600);
+}

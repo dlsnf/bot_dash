@@ -19,7 +19,25 @@
 cp js/config.example.js js/config.js
 ```
 
-`js/config.js`를 열어 캐릭터 파일 목록을 지정합니다. 비밀번호는 이 파일에 적지 않습니다. 캐릭터 데이터가 있다면 `characters/`에 별도로 준비하고, `characterFiles`에 파일명을 추가하세요.
+`js/config.js`는 화면 기준값만 담습니다. 비밀번호와 캐릭터 파일명은 적지 않습니다. 캐릭터 마크다운은 `characters/`에 넣으면 대시보드가 `.md` 파일을 스스로 읽습니다.
+
+로그인에 쓰는 값은 `.env.example`을 웹 폴더 밖 `/etc/bot_dash.env`로 복사한 뒤 바꿉니다. 프로젝트 안의 `.env`는 읽지 않습니다.
+
+```bash
+cp .env.example /etc/bot_dash.env
+chmod 600 /etc/bot_dash.env
+```
+
+Windows에서는 같은 기본 경로가 드라이브 루트의 `C:\etc\bot_dash.env`입니다.
+
+```powershell
+New-Item -ItemType Directory -Force -Path C:\etc | Out-Null
+Copy-Item .env.example C:\etc\bot_dash.env
+```
+
+`BOTDASH_USER`와 `BOTDASH_PASSWORD`를 채우고, 파일은 UTF-8로 저장합니다. 다른 경로를 쓰려면 그 경로를 `BOTDASH_ENV`에 넣습니다. 컨테이너라면 파일을 두지 않고 같은 이름의 환경 변수를 넘깁니다. 프로세스에 `BOTDASH_USER`와 `BOTDASH_PASSWORD`가 둘 다 있으면 그 값이 파일보다 우선합니다.
+
+Blogger 페이지뷰를 API로 받을 때만 `.env.example`에 주석으로 있는 `BLOGGER_CLIENT_ID_`, `BLOGGER_CLIENT_SECRET_`, `BLOGGER_REFRESH_TOKEN_` 줄을 캐릭터 파일명 접미사로 채웁니다. 예를 들어 `characters/na_nuri.md`는 `BLOGGER_CLIENT_ID_na_nuri`입니다. 블로그 주소는 캐릭터 마크다운에 둡니다.
 
 정적 파일을 확인하려면 다음 명령으로 서버를 실행합니다.
 
@@ -37,11 +55,11 @@ php -S 127.0.0.1:8080
 
 `.gitignore`는 개인 캐릭터 파일, 실제 설정 파일, 통계 데이터를 저장소에서 제외합니다. 공개 저장소에는 실제 계정 정보, 이메일, 비밀번호, 개인 메모 또는 통계를 추가하지 마세요. 예시 설정의 값은 실제 인증 정보로 사용하지 마세요.
 
-비밀번호는 `js/config.js`에 넣지 않습니다. 서버의 `/etc/bot_dash.env`에 `BOTDASH_USER`와 `BOTDASH_PASSWORD`를 두거나, 컨테이너에는 같은 이름의 환경 변수를 넘깁니다. 로그인한 뒤에만 `content.php`가 마크다운과 `stats.json`을 돌려주고, `profile.php`가 글·댓글 수와 프로필 사진을 가져옵니다. 이 사이트는 HTTP라 로그인 요청 자체는 암호화되지 않습니다. HTTPS가 있으면 그쪽으로 여는 것이 맞습니다.
+비밀번호는 `js/config.js`나 웹에서 열리는 `.env`에 넣지 않습니다. [로컬 실행](#로컬-실행)처럼 `/etc/bot_dash.env`에 `BOTDASH_USER`와 `BOTDASH_PASSWORD`를 두거나, 컨테이너에는 같은 이름의 환경 변수를 넘깁니다. 로그인한 뒤에만 `content.php`가 마크다운과 `stats.json`을 돌려주고, `profile.php`가 글·댓글 수와 프로필 사진을 가져옵니다. 이 사이트는 HTTP라 로그인 요청 자체는 암호화되지 않습니다. HTTPS가 있으면 그쪽으로 여는 것이 맞습니다.
 
 ## 캐릭터 데이터
 
-캐릭터 파일은 `characters/` 아래의 Markdown 파일입니다. 파일을 추가한 후 `js/config.js`의 `characterFiles`에 이름을 등록하면 대시보드가 해당 데이터를 읽습니다. 선택적으로 `data/stats.json`에서 방문자 등 통계를 관리할 수 있습니다.
+캐릭터 파일은 `characters/` 바로 아래의 Markdown 파일입니다. 파일을 넣으면 로그인한 대시보드가 그 목록을 읽어 카드를 만듭니다. 파일명은 영문, 숫자, `_`, `-`만 쓸 수 있고, 하위 폴더의 파일은 읽지 않습니다. 선택적으로 `data/stats.json`에서 방문자 등 통계를 관리할 수 있습니다.
 
 ## 기술 구성
 

@@ -501,3 +501,159 @@ function history_apply($data, $blog, $day, $today, $now = null) {
     ksort($kept);
     return $kept;
 }
+
+/**
+ * 그 서울 날짜의 마지막 전체 페이지뷰를 남긴다.
+ * 지난 날짜는 고치지 않고, 오늘로부터 13일보다 오래된 칸은 뺀다.
+ * 대시보드가 조회할 때만 갱신되므로, 그날의 마지막 조회가 마감 값이다.
+ */
+function blogger_total_apply($data, $blog, $day, $total, $now = null) {
+    if (!is_array($data)) $data = array();
+    if (!is_string($blog) || $blog === "" || !is_int($total) || $total < 0) return $data;
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $day)) return $data;
+    $clock = seoul_clock($now);
+    if ($day !== $clock->format("Y-m-d")) return $data;
+    if (!isset($data[$day]) || !is_array($data[$day])) $data[$day] = array();
+    $data[$day][$blog] = $total;
+    $cutoff = clone $clock;
+    $cutoff->modify("-13 days");
+    $cutoffKey = $cutoff->format("Y-m-d");
+    $kept = array();
+    foreach ($data as $key => $row) {
+        if (!is_string($key) || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $key) || $key < $cutoffKey) continue;
+        if (!is_array($row)) continue;
+        $clean = array();
+        foreach ($row as $url => $value) {
+            if (!is_string($url) || $url === "") continue;
+            if (is_int($value) && $value >= 0) $clean[$url] = $value;
+            elseif (is_string($value) && preg_match('/^\d{1,12}$/', $value)) $clean[$url] = (int) $value;
+        }
+        if ($clean) $kept[$key] = $clean;
+    }
+    ksort($kept);
+    return $kept;
+}
+
+/**
+ * 오늘 페이지뷰는 지금 전체에서 어제 마감 전체를 뺀 값이다.
+ * 어제 칸이 없거나 전체가 줄어들면 null.
+ */
+function blogger_today_count($data, $blog, $total, $now = null) {
+    if (!is_array($data) || !is_string($blog) || $blog === "" || !is_int($total) || $total < 0) return null;
+    $yesterday = seoul_clock($now);
+    $yesterday->modify("-1 day");
+    $key = $yesterday->format("Y-m-d");
+    if (!isset($data[$key]) || !is_array($data[$key]) || !array_key_exists($blog, $data[$key])) return null;
+    $base = $data[$key][$blog];
+    if (is_string($base) && preg_match('/^\d{1,12}$/', $base)) $base = (int) $base;
+    if (!is_int($base) || $base < 0 || $total < $base) return null;
+    return $total - $base;
+}
+
+function blogger_api_pageviews($status, $body) {
+    if ((int) $status !== 200 || !is_string($body) || $body === "" || $body[0] !== "{") return null;
+    $data = json_decode($body, true, 512, JSON_BIGINT_AS_STRING);
+    if (!is_array($data) || !isset($data["counts"]) || !is_array($data["counts"])) return null;
+    foreach ($data["counts"] as $row) {
+        if (!is_array($row) || !isset($row["timeRange"])) continue;
+        if ($row["timeRange"] !== "ALL_TIME" && $row["timeRange"] !== "all") continue;
+        return as_count(isset($row["count"]) ? $row["count"] : null);
+    }
+    return null;
+}
+
+function blogger_api_blog_id($status, $body) {
+    if ((int) $status !== 200 || !is_string($body) || $body === "" || $body[0] !== "{") return "";
+    $data = json_decode($body, true, 512, JSON_BIGINT_AS_STRING);
+    if (!is_array($data) || !isset($data["id"])) return "";
+    $id = $data["id"];
+    if (is_int($id)) $id = (string) $id;
+    if (!is_string($id) || !preg_match('/^\d{1,24}$/', $id)) return "";
+    return $id;
+}
+
+function blogger_blog_names($text) {
+    $names = array();
+    foreach (preg_split('/[\s,]+/', (string) $text) as $part) {
+        $part = strtolower(trim($part));
+        if ($part === "") continue;
+        $host = $part;
+        if (strpos($part, "://") !== false) {
+            $parsed = parse_url($part, PHP_URL_HOST);
+            $host = is_string($parsed) ? strtolower($parsed) : "";
+        }
+        $name = blogspot_name($host);
+        if ($name === "" && preg_match('/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/', $part)) $name = $part;
+        if ($name !== "") $names[$name] = true;
+    }
+    return array_keys($names);
+}
+
+function blogger_character_blogs($markdown) {
+    $names = array();
+    if (!is_string($markdown) || $markdown === "") return array();
+    if (!preg_match_all('#https?://([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.blogspot\.[a-z0-9.]+)#i', $markdown, $matches)) {
+        return array();
+    }
+    foreach ($matches[1] as $host) {
+        $name = blogspot_name($host);
+        if ($name !== "") $names[$name] = true;
+    }
+    return array_keys($names);
+}
+
+function blogger_apply_character_blogs($sets, $bySuffix) {
+    if (!is_array($sets)) return array();
+    if (!is_array($bySuffix)) $bySuffix = array();
+    foreach ($sets as $index => $set) {
+        if (!is_array($set)) continue;
+        $blogs = isset($set["blogs"]) && is_array($set["blogs"]) ? $set["blogs"] : array();
+        if ($blogs) continue;
+        $suffix = isset($set["suffix"]) && is_string($set["suffix"]) ? $set["suffix"] : "";
+        if ($suffix === "" || !isset($bySuffix[$suffix]) || !is_array($bySuffix[$suffix])) continue;
+        $sets[$index]["blogs"] = array_values($bySuffix[$suffix]);
+    }
+    return $sets;
+}
+
+function blogger_credential_sets($vars) {
+    if (!is_array($vars)) return array();
+    $sets = array();
+    foreach ($vars as $key => $value) {
+        if (!is_string($key) || !preg_match('/^BLOGGER_REFRESH_TOKEN_([A-Za-z0-9_]+)$/', $key, $matched)) continue;
+        if (!is_string($value) || $value === "") continue;
+        $suffix = $matched[1];
+        $idKey = "BLOGGER_CLIENT_ID_" . $suffix;
+        $secretKey = "BLOGGER_CLIENT_SECRET_" . $suffix;
+        $id = isset($vars[$idKey]) && is_string($vars[$idKey]) ? $vars[$idKey] : "";
+        $secret = isset($vars[$secretKey]) && is_string($vars[$secretKey]) ? $vars[$secretKey] : "";
+        if ($id === "" || $secret === "") continue;
+        $blogsKey = "BLOGGER_BLOGS_" . $suffix;
+        $blogs = isset($vars[$blogsKey]) && is_string($vars[$blogsKey]) ? blogger_blog_names($vars[$blogsKey]) : array();
+        $sets[] = array(
+            "suffix" => $suffix,
+            "client_id" => $id,
+            "client_secret" => $secret,
+            "refresh_token" => $value,
+            "blogs" => $blogs
+        );
+    }
+    return $sets;
+}
+
+function blogger_sets_for($name, $sets) {
+    if (!is_string($name) || $name === "" || !is_array($sets)) return array();
+    $named = array();
+    $open = array();
+    foreach ($sets as $set) {
+        if (!is_array($set)) continue;
+        $blogs = isset($set["blogs"]) && is_array($set["blogs"]) ? $set["blogs"] : array();
+        if ($blogs) {
+            if (in_array($name, $blogs, true)) $named[] = $set;
+        } else {
+            $open[] = $set;
+        }
+    }
+    if ($named) return $named;
+    return $open;
+}

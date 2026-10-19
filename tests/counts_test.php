@@ -158,6 +158,58 @@ expect("페이지뷰 합계", blogger_stats_total(200, '{"total":48,"sparklineDa
 expect("페이지뷰 본문이 아니면 비움", blogger_stats_total(200, "<HTML>Forbidden</HTML>"), null);
 expect("음수 페이지뷰는 비움", blogger_stats_total(200, '{"total":-1}'), null);
 
+$views = '{"counts":[{"timeRange":"SEVEN_DAYS","count":"70"},{"timeRange":"ALL_TIME","count":"73"}]}';
+expect("API 전체 페이지뷰", blogger_api_pageviews(200, $views), 73);
+expect("전체 구간이 없으면 비움", blogger_api_pageviews(200, '{"counts":[{"timeRange":"SEVEN_DAYS","count":"3"}]}'), null);
+expect("API 블로그 아이디", blogger_api_blog_id(200, '{"id":"3237702426019841266"}'), "3237702426019841266");
+expect("블로그 이름 목록", blogger_blog_names("https://nuri-seoul-shopping-bag.blogspot.com/, nuri-seoul-okaimono.blogspot.com"), array("nuri-seoul-shopping-bag", "nuri-seoul-okaimono"));
+$characterMd = "티스토리 https://dlsnf8478.tistory.com/ / Blogger(영어), https://nuri-seoul-shopping-bag.blogspot.com/ (blogID 1) / Blogger(일본어), https://nuri-seoul-okaimono.blogspot.com/";
+expect("캐릭터 파일의 Blogger 주소", blogger_character_blogs($characterMd), array("nuri-seoul-shopping-bag", "nuri-seoul-okaimono"));
+expect("Blogger가 아니면 비움", blogger_character_blogs("https://blog.naver.com/dlsnf8478"), array());
+$fromFile = blogger_apply_character_blogs(array(
+    array("suffix" => "na_nuri", "blogs" => array()),
+    array("suffix" => "kang_doyun", "blogs" => array("donuguri-spec-notes"))
+), array("na_nuri" => array("nuri-seoul-shopping-bag", "nuri-seoul-okaimono")));
+expect("파일 이름이 같은 계정에 주소를 붙인다", $fromFile[0]["blogs"], array("nuri-seoul-shopping-bag", "nuri-seoul-okaimono"));
+expect("이미 적힌 주소는 파일로 바꾸지 않는다", $fromFile[1]["blogs"], array("donuguri-spec-notes"));
+
+$sets = blogger_credential_sets(array(
+    "BLOGGER_CLIENT_ID_en_na_nuri" => "id",
+    "BLOGGER_CLIENT_SECRET_en_na_nuri" => "secret",
+    "BLOGGER_REFRESH_TOKEN_en_na_nuri" => "refresh",
+    "BLOGGER_BLOGS_en_na_nuri" => "nuri-seoul-shopping-bag.blogspot.com",
+    "BLOGGER_CLIENT_ID_en_kang_doyun" => "id2",
+    "BLOGGER_CLIENT_SECRET_en_kang_doyun" => "secret2",
+    "BLOGGER_REFRESH_TOKEN_en_kang_doyun" => "refresh2"
+));
+expect("지정된 블로그의 계정", blogger_sets_for("nuri-seoul-shopping-bag", $sets)[0]["suffix"], "en_na_nuri");
+expect("목록이 없는 계정은 나머지 블로그에 쓴다", blogger_sets_for("kang-doyun", $sets)[0]["suffix"], "en_kang_doyun");
+expect("빈 토큰은 계정에서 뺀다", blogger_credential_sets(array(
+    "BLOGGER_CLIENT_ID_en_na_nuri" => "id",
+    "BLOGGER_CLIENT_SECRET_en_na_nuri" => "",
+    "BLOGGER_REFRESH_TOKEN_en_na_nuri" => "refresh"
+)), array());
+
+$closeNow = new DateTime("2026-10-20 00:30:00", new DateTimeZone("Asia/Seoul"));
+$nuri = "https://nuri-seoul-shopping-bag.blogspot.com/";
+$closes = array(
+    "2026-10-06" => array($nuri => 1),
+    "2026-10-19" => array($nuri => 73)
+);
+expect("어제 마감과의 차이", blogger_today_count($closes, $nuri, 80, $closeNow), 7);
+expect("어제 기록이 없으면 비움", blogger_today_count(array(), $nuri, 80, $closeNow), null);
+expect("줄어든 전체는 비움", blogger_today_count($closes, $nuri, 70, $closeNow), null);
+expect("다른 블로그 마감은 쓰지 않는다", blogger_today_count($closes, "https://other.blogspot.com/", 80, $closeNow), null);
+expect("그저께 값으로는 오늘을 만들지 않는다", blogger_today_count(array("2026-10-18" => array($nuri => 10)), $nuri, 80, $closeNow), null);
+$stored = blogger_total_apply($closes, $nuri, "2026-10-20", 80, $closeNow);
+expect("오늘 전체에 기록", $stored["2026-10-20"][$nuri], 80);
+expect("어제 마감은 그대로", $stored["2026-10-19"][$nuri], 73);
+$stored = blogger_total_apply($stored, $nuri, "2026-10-20", 85, $closeNow);
+expect("같은 날 나중 값이 마감", $stored["2026-10-20"][$nuri], 85);
+expect("14일 전 마감은 뺀다", isset($stored["2026-10-06"]), false);
+$untouchedTotal = blogger_total_apply($stored, $nuri, "2026-10-19", 1, $closeNow);
+expect("지난 날짜의 전체는 고치지 않는다", $untouchedTotal["2026-10-19"][$nuri], 73);
+
 if ($failed > 0) {
     fwrite(STDERR, $failed . " failed\n");
     exit(1);
