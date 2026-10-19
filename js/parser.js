@@ -188,7 +188,15 @@
     return "";
   }
 
-  // "네이버 … https://blog.naver.com/id / 티스토리 …" 한 줄을 블로그 목록으로 나눈다.
+  function blogspotName(host) {
+    var matched = /^([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)\.blogspot\.([a-z0-9.]+)$/.exec(String(host || ""));
+    if (!matched) return "";
+    if (!/^(?:com|co\.[a-z]{2}|com\.[a-z]{2}|[a-z]{2})$/.test(matched[2])) return "";
+    if (matched[1] === "www") return "";
+    return matched[1];
+  }
+
+  // "네이버 … https://blog.naver.com/id / 티스토리 … / Blogger …" 한 줄을 블로그 목록으로 나눈다.
   function parseBlogLine(value) {
     var text = String(value || "").trim();
     if (!text || text === "없음" || text === "(없음)") return [];
@@ -196,9 +204,13 @@
     text.split(/\s+\/\s+/).forEach(function (part) {
       var found = /https?:\/\/[^\s)]+/i.exec(part);
       if (!found) return;
+      var host = "";
+      try { host = new URL(cleanUrl(found[0])).hostname.toLowerCase(); } catch (error) {}
       var platform = "블로그";
-      if (part.indexOf("티스토리") !== -1) platform = "티스토리";
+      if (blogspotName(host)) platform = "Blogger";
+      else if (part.indexOf("티스토리") !== -1) platform = "티스토리";
       else if (part.indexOf("네이버") !== -1) platform = "네이버";
+      else if (/blogger|블로거/i.test(part)) platform = "Blogger";
       else if (part.indexOf("뽐뿌") !== -1) platform = "뽐뿌";
       else if (part.indexOf("클리앙") !== -1) platform = "클리앙";
       // 주소가 있으면 운영 중이다. 메모에 적힌 미운영은 카드에 붙이지 않는다.

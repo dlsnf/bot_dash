@@ -401,7 +401,7 @@ button, input, select { font: inherit; color: inherit; }
 
 .tab-errors { margin: 8px 0 0; }
 
-.card-grid { display: grid; grid-template-columns: 1fr; gap: 14px; margin-top: 16px; }
+.card-grid { display: grid; grid-template-columns: 1fr; gap: 14px; margin-top: 16px; align-items: start; }
 
 .stats-panel { display: grid; gap: 16px; margin-top: 16px; }
 
@@ -481,7 +481,7 @@ button, input, select { font: inherit; color: inherit; }
 .card {
   --mark: 22px;
   --row-gap: 8px;
-  --name-col: 46px;
+  --name-col: 80px;
   position: relative;
   display: flex;
   flex-direction: column;
@@ -638,22 +638,22 @@ button, input, select { font: inherit; color: inherit; }
 
 .visitor-blogs {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px 22px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px 10px;
   align-items: start;
 }
 
 .visitor-blogs.is-single { grid-template-columns: 1fr; }
 
-.visitor-blog { min-width: 0; display: grid; align-content: start; gap: 8px; }
+.visitor-blog { min-width: 0; display: grid; align-content: start; gap: 8px; container-type: inline-size; }
 
 .visitor-blog .visitor-num { font-size: 36px; }
 
 .visitor-blogs.is-single .visitor-num { font-size: 52px; }
 
 .visitor-label {
-  display: flex;
-  align-items: center;
+  display: block;
+  min-width: 0;
   min-height: 1.3em;
   margin: 0;
   color: var(--muted);
@@ -1303,9 +1303,9 @@ body[data-page="login"].auth-ready .login-shell { visibility: visible; }
   .card .badge { height: 28px; min-height: 28px; font-size: 14px; }
   .card .visitor-label { font-size: 15px; }
   .card .visitor-blogs.is-single .visitor-num { font-size: 68px; }
-  .card .visitor-blogs:not(.is-single) .visitor-num { font-size: 44px; }
+  .card .visitor-blogs:not(.is-single) .visitor-num { font-size: clamp(22px, 30cqi, 44px); }
   .card .delta { font-size: 17px; }
-  .card { --mark: 28px; --name-col: 57px; }
+  .card { --mark: 28px; --name-col: 108px; }
   .card .account-list li { font-size: 16px; }
   .card .plat { width: 28px; height: 28px; font-size: 13px; }
   .card .blog-row { --platform-size: 15px; --link-size: 17px; }
@@ -1374,7 +1374,7 @@ body[data-page="login"].auth-ready .login-shell { visibility: visible; }
   .view-tabs button { padding: 0 12px; }
   .tab-meta { font-size: 11px; }
   .visitor-blogs.is-single .visitor-num { font-size: 46px; }
-  .visitor-blogs:not(.is-single) .visitor-num { font-size: 32px; }
+  .visitor-blogs:not(.is-single) .visitor-num { font-size: clamp(20px, 30cqi, 32px); }
   .chart-card { padding: 14px 12px 8px; }
   .chart-wrap { height: 220px; }
   .chart-head { flex-direction: column; align-items: stretch; }

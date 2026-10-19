@@ -39,7 +39,8 @@
     page8: "8페이지 초과",
     short: "목록이 부족",
     unread: "못 읽음",
-    more: "댓글이 더 있음"
+    more: "댓글이 더 있음",
+    alltime: "일별 없음"
   };
   var SECRET_KEYS = { password: 1, passwd: 1, pwd: 1, secret: 1, token: 1 };
 
@@ -614,7 +615,7 @@
       if (!href) return;
       var host = "";
       try { host = new URL(href).hostname.toLowerCase(); } catch (error) { return; }
-      var allowed = host === "blog.naver.com" || host === "m.blog.naver.com" || /\.tistory\.com$/.test(host);
+      var allowed = host === "blog.naver.com" || host === "m.blog.naver.com" || /\.tistory\.com$/.test(host) || blogspotName(host) !== "";
       if (!allowed) return;
       var base = "profile.php?blog=" + encodeURIComponent(href);
       sources.push({ thumb: base, large: base + "&size=large" });
@@ -1159,7 +1160,7 @@
       var host = parsed.hostname.toLowerCase();
       var naver = host === "blog.naver.com" || host === "m.blog.naver.com";
       var tistory = /^[a-z0-9-]+\.tistory\.com$/.test(host);
-      if (!naver && !tistory) return "";
+      if (!naver && !tistory && !blogspotName(host)) return "";
       parsed.hash = "";
       if (parsed.pathname.length > 1) parsed.pathname = parsed.pathname.replace(/\/+$/, "");
       return parsed.href;
@@ -1293,12 +1294,16 @@
     if (!blogs.length) return keys.map(function () { return null; });
     return keys.map(function (day) {
       var sum = 0;
+      var counted = 0;
       for (var i = 0; i < blogs.length; i++) {
-        var value = blogDayVisitors(countableBlogUrl(blogs[i].url), day);
+        var key = countableBlogUrl(blogs[i].url);
+        if (omitsDailyVisitors(state.blogCounts[key])) continue;
+        var value = blogDayVisitors(key, day);
         if (value == null) return null;
+        counted += 1;
         sum += value;
       }
-      return sum;
+      return counted ? sum : null;
     });
   }
 
@@ -1464,7 +1469,7 @@
     var commentsToday = data && data.status === "ok" ? data.commentsToday : null;
     var items = [];
     if (!activity) {
-      items.push({ label: "오늘", field: "today", value: data && data.status === "ok" ? data.today : null });
+      items.push({ label: "오늘", field: "today", value: displayToday(data) });
       items.push({ label: "전체", field: "total", value: data && data.status === "ok" ? data.total : null });
     }
     items.push({ label: "글", field: "posts", todayField: "postsToday", icon: "fa-solid fa-file-lines", value: posts, today: postsToday });
@@ -1752,17 +1757,40 @@
     );
   }
 
-  function compareBlogs(a, b) {
-    var platform = String(a.platform || "").localeCompare(String(b.platform || ""), "ko");
-    if (platform) return platform;
-    return String(a.url || "").localeCompare(String(b.url || ""), "ko");
+  // 같은 플랫폼이 둘 이상이면 파일에 적힌 순서대로 Blogger 1, Blogger 2 처럼 나눈다.
+  function labeledBlogs(character, requireUrl) {
+    var rows = (character.blogs || []).map(function (blog, index) {
+      return { blog: blog, order: index };
+    }).filter(function (row) {
+      return !requireUrl || String(row.blog.url || "").trim();
+    }).sort(function (a, b) {
+      var platform = String(a.blog.platform || "").localeCompare(String(b.blog.platform || ""), "ko");
+      if (platform) return platform;
+      return a.order - b.order;
+    });
+    var totals = {};
+    rows.forEach(function (row) {
+      var name = row.blog.platform || "블로그";
+      totals[name] = (totals[name] || 0) + 1;
+    });
+    var seen = {};
+    rows.forEach(function (row) {
+      var name = row.blog.platform || "블로그";
+      if (totals[name] > 1) {
+        seen[name] = (seen[name] || 0) + 1;
+        row.label = name + " " + seen[name];
+      } else {
+        row.label = name;
+      }
+    });
+    return rows;
   }
 
   function applyVisitorBlog(block, url) {
     var key = countableBlogUrl(url);
     var data = key ? state.blogCounts[key] : null;
     var loading = !!(key && (countsBlockPaint() || !data || data.status === "loading"));
-    var today = data && data.status === "ok" ? data.today : null;
+    var today = displayToday(data);
     var total = data && data.status === "ok" ? data.total : null;
     var num = block.querySelector("[data-blog-today]");
     var totalEl = block.querySelector("[data-blog-total]");
@@ -1800,8 +1828,27 @@
     return h("span", { class: "visitor-paused", text: "미운영" });
   }
 
+  function blogspotName(host) {
+    var matched = /^([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)\.blogspot\.([a-z0-9.]+)$/.exec(String(host || ""));
+    if (!matched) return "";
+    if (!/^(?:com|co\.[a-z]{2}|com\.[a-z]{2}|[a-z]{2})$/.test(matched[2])) return "";
+    if (matched[1] === "www") return "";
+    return matched[1];
+  }
+
+  function omitsDailyVisitors(data) {
+    return !!(data && data.status === "ok" && data.today == null && data.gaps && data.gaps.today === "alltime");
+  }
+
+  // 일별 방문자 없는 블로그는 칸에 0을 그린다. 오늘 합과 기록에는 넣지 않는다.
+  function displayToday(data) {
+    if (omitsDailyVisitors(data)) return 0;
+    if (!data || data.status !== "ok" || typeof data.today !== "number") return null;
+    return data.today;
+  }
+
   function platformIcon(name) {
-    var file = name === "네이버" ? "naver.jpg" : name === "티스토리" ? "tistory.jpg" : "";
+    var file = name === "네이버" ? "naver.jpg" : name === "티스토리" ? "tistory.jpg" : name === "Blogger" ? "blogger.jpg" : "";
     if (!file) return null;
     return h("img", {
       class: "platform-icon",
@@ -1812,23 +1859,18 @@
     });
   }
 
-  function blogsWithUrl(character) {
-    return (character.blogs || []).filter(function (blog) {
-      return String(blog.url || "").trim();
-    }).sort(compareBlogs);
-  }
-
   function visitorBlogsNode(character) {
-    var blogs = blogsWithUrl(character);
-    if (!blogs.length) {
+    var rows = labeledBlogs(character, true);
+    if (!rows.length) {
       return h("p", { class: "visitor-note", text: "블로그 없음" });
     }
-    var wrap = h("div", { class: "visitor-blogs" + (blogs.length === 1 ? " is-single" : "") });
-    blogs.forEach(function (blog) {
+    var wrap = h("div", { class: "visitor-blogs" + (rows.length === 1 ? " is-single" : "") });
+    rows.forEach(function (row) {
+      var blog = row.blog;
       var key = countableBlogUrl(blog.url) || safeUrl(blog.url) || blog.url;
       var block = h("div", { class: "visitor-blog", "data-visitor-blog": key },
         h("p", { class: "visitor-label" },
-          (blog.platform || "블로그") + " · 오늘",
+          row.label + " · 오늘",
           blog.paused ? pausedMark() : null
         ),
         h("p", { class: "visitor-num", "data-blog-today": "1", text: "…" }),
@@ -1843,19 +1885,20 @@
   }
 
   function blogLinks(character) {
-    var blogs = blogsWithUrl(character);
+    var rows = labeledBlogs(character, true);
     var wrap = h("div", { class: "blog-links" });
-    if (!blogs.length) {
+    if (!rows.length) {
       wrap.appendChild(h("p", { class: "blog-empty", text: "블로그 없음" }));
       return wrap;
     }
-    blogs.forEach(function (blog) {
+    rows.forEach(function (entry) {
+      var blog = entry.blog;
       var href = safeUrl(blog.url);
       var row = h("div", { class: blog.platform ? "blog-row" : "blog-row is-plain" });
       if (blog.platform) {
         row.appendChild(h("span", { class: "blog-platform" },
           platformIcon(blog.platform),
-          h("span", { class: "platform-name", text: blog.platform }),
+          h("span", { class: "platform-name", text: entry.label }),
           blog.paused ? pausedMark() : null
         ));
       }
@@ -2005,12 +2048,6 @@
     var basis = document.getElementById("statsBasis");
     if (updated) updated.textContent = state.loadedAt ? "화면 갱신 " + formatWhen(state.loadedAt) : "화면 갱신 —";
     if (basis) basis.textContent = state.statsUpdatedAt ? "통계 기준 " + formatWhen(state.statsUpdatedAt) : "통계 기준 —";
-    var partialNote = document.getElementById("visitorPartial");
-    if (partialNote) {
-      var anyPartial = !figuresWait && ok.some(function (row) { return row.visitorPartial; });
-      partialNote.hidden = !anyPartial;
-      partialNote.textContent = anyPartial ? "일부 블로그는 오늘·전체 합에 빠졌습니다." : "";
-    }
   }
 
   function summedVisitors(rows, field) {
@@ -2233,7 +2270,7 @@
 
   function statCountNode(data, field) {
     var todayField = field === "posts" ? "postsToday" : field === "comments" ? "commentsToday" : "";
-    var value = data && data.status === "ok" ? data[field] : null;
+    var value = field === "today" ? displayToday(data) : (data && data.status === "ok" ? data[field] : null);
     if (value == null) return h("span", { class: "count-gap", text: gapText(data, field) });
     if (!todayField) return document.createTextNode(formatNumber(value));
     var today = data[todayField];
@@ -2291,7 +2328,7 @@
     )));
     var body = h("tbody");
     rows.forEach(function (character) {
-      var blogs = character.ok ? blogsWithUrl(character) : [];
+      var blogs = character.ok ? labeledBlogs(character, true) : [];
       var span = Math.max(1, blogs.length);
       var nameCell = h("th", { scope: "row" }, character.ok ? character.name : "파싱 오류");
       if (character.ok) nameCell.appendChild(sparkHost(character));
@@ -2300,10 +2337,11 @@
         body.appendChild(h("tr", null, nameCell, h("td", { text: "없음" }), h("td", { class: "num", text: "—" }), h("td", { class: "num", text: "—" }), h("td", { class: "num", text: "—" }), h("td", { class: "num", text: "—" })));
         return;
       }
-      blogs.forEach(function (blog, index) {
+      blogs.forEach(function (entry, index) {
+        var blog = entry.blog;
         var cells = [
           h("td", null, h("span", { class: "stats-platform" },
-            blog.platform || "블로그",
+            entry.label,
             blog.paused ? pausedMark() : null
           )),
           countCell(blog, "today"),
@@ -2403,6 +2441,7 @@
       var totalSum = 0;
       var todayKnown = 0;
       var totalKnown = 0;
+      var dailyBlogs = 0;
       var pending = false;
       blogs.forEach(function (blog) {
         var data = state.blogCounts[countableBlogUrl(blog.url)];
@@ -2410,12 +2449,15 @@
           pending = true;
           return;
         }
-        if (data.status !== "ok") return;
-        if (data.today != null) {
-          todaySum += data.today;
-          todayKnown += 1;
+        // Blogger는 전체 페이지뷰만 공개한다. 오늘 합에서 빠진 것으로 보지 않는다.
+        if (!omitsDailyVisitors(data)) {
+          dailyBlogs += 1;
+          if (data.status === "ok" && data.today != null) {
+            todaySum += data.today;
+            todayKnown += 1;
+          }
         }
-        if (data.total != null) {
+        if (data.status === "ok" && data.total != null) {
           totalSum += data.total;
           totalKnown += 1;
         }
@@ -2424,7 +2466,7 @@
       if (pending) return;
       character.todayVisitors = todayKnown > 0 ? todaySum : null;
       character.totalVisitors = totalKnown > 0 ? totalSum : null;
-      character.visitorPartial = todayKnown < blogs.length || totalKnown < blogs.length;
+      character.visitorPartial = todayKnown < dailyBlogs || totalKnown < blogs.length;
     });
   }
 
@@ -2682,17 +2724,18 @@
 
   function buildBlogPanel(character) {
     var panel = h("div", { class: "panel" });
-    var blogs = (character.blogs || []).slice().sort(compareBlogs);
+    var blogs = labeledBlogs(character, false);
     if (!blogs.length) {
       panel.appendChild(h("p", { text: "등록된 블로그가 없습니다." }));
       return panel;
     }
     var list = h("ul", { class: "link-list" });
-    blogs.forEach(function (blog) {
+    blogs.forEach(function (entry) {
+      var blog = entry.blog;
       var href = safeUrl(blog.url || "");
       var item = h("li", null, h("strong", { class: "blog-platform" },
         platformIcon(blog.platform),
-        h("span", { class: "platform-name", text: blog.platform || "블로그" }),
+        h("span", { class: "platform-name", text: entry.label }),
         blog.paused ? pausedMark() : null
       ));
       if (blog.accountId) item.appendChild(h("span", { class: "kv" }, h("em", { text: "아이디" }), " " + blog.accountId));

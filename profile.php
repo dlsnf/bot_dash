@@ -1,11 +1,12 @@
 <?php
 /**
- * 네이버·티스토리 블로그의 프로필 사진, 또는 글·댓글 수만 같은 주소로 돌려준다.
+ * 네이버·티스토리·Blogger 블로그의 프로필 사진, 또는 글·댓글 수만 같은 주소로 돌려준다.
  * size=large 는 카드용으로 줄인 사진 대신 더 큰 원본에 가까운 사진을 돌려준다.
  * 사진이 없거나 기본 이미지면 404. 화면은 그때 기본 캐릭터 이미지를 쓴다.
  * view=counts 는 {"posts","comments","today","total","postsToday","commentsToday"} 를 돌려준다.
  * 값은 정수이거나 null이다. postsToday, commentsToday 는 최근 24시간 동안 올라온 개수다.
  * null 인 칸은 gaps 에 이유를 붙인다. 오늘 방문자는 data/history.json 에 날짜마다 하나 남긴다.
+ * Blogger 는 글·댓글과 전체 페이지뷰만 공개된다. today 는 null 이고 gaps.today 는 alltime 이다.
  * 블로그 주소 외의 요청은 받지 않고, 받아 온 본문은 그대로 내보내지 않는다.
  */
 ini_set("display_errors", "0");
@@ -55,16 +56,18 @@ function blog_kind($url) {
     $host = host_of($url);
     if ($host === "blog.naver.com" || $host === "m.blog.naver.com") return "naver";
     if (preg_match('/^[a-z0-9-]+\.tistory\.com$/', $host)) return "tistory";
+    if (blogspot_name($host) !== "") return "blogger";
     return "";
 }
 
 function image_host_ok($url) {
     $host = host_of($url);
-    return in_array($host, array(
+    if (in_array($host, array(
         "blogpfthumb-phinf.pstatic.net",
         "tistory1.daumcdn.net",
         "img1.daumcdn.net"
-    ), true);
+    ), true)) return true;
+    return blogger_image_host($host);
 }
 
 function request_headers($extraHeaders) {
@@ -258,7 +261,7 @@ function decode_js_url($value) {
 }
 
 function is_placeholder($url) {
-    return (bool) preg_match('/default_[LSMsm]\.png|tistory_admin\/static|profile_default|static\/blog\/icon/i', $url);
+    return (bool) preg_match('/default_[LSMsm]\.png|tistory_admin\/static|profile_default|static\/blog\/icon|\/anon\d*\.png|default-avatar|\/U2hvZWJveA\/|blank\.gif/i', $url);
 }
 
 function without_image_type($url) {
@@ -394,7 +397,7 @@ function send_body($type, $body, $seconds) {
 }
 
 function clean_gaps($gaps) {
-    $allowed = array("cap20" => true, "cap40" => true, "page8" => true, "short" => true, "unread" => true, "more" => true);
+    $allowed = array("cap20" => true, "cap40" => true, "page8" => true, "short" => true, "unread" => true, "more" => true, "alltime" => true);
     $fields = array("posts", "comments", "today", "total", "postsToday", "commentsToday");
     $out = array();
     if (!is_array($gaps)) return $out;
@@ -1067,6 +1070,116 @@ function image_type($body, $header) {
     return "";
 }
 
+function blogger_same_blog($url, $name) {
+    return blogspot_name(host_of($url)) === $name;
+}
+
+function blogger_feed_allow($name) {
+    return function ($url) use ($name) {
+        $path = parse_url($url, PHP_URL_PATH);
+        if ($path !== "/feeds/posts/default" && $path !== "/feeds/comments/default") {
+            if (host_of($url) !== "www.blogger.com") return false;
+            return (bool) preg_match('#^/feeds/\d{1,24}/(?:posts|comments)/default$#', (string) $path);
+        }
+        return blogger_same_blog($url, $name);
+    };
+}
+
+function blogger_home_allow($name) {
+    return function ($url) use ($name) {
+        if (!blogger_same_blog($url, $name)) return false;
+        $path = parse_url($url, PHP_URL_PATH);
+        return !is_string($path) || $path === "" || $path === "/";
+    };
+}
+
+function blogger_stats_allow($name) {
+    return function ($url) use ($name) {
+        if (!blogger_same_blog($url, $name)) return false;
+        return parse_url($url, PHP_URL_PATH) === "/b/stats";
+    };
+}
+
+function blogger_job($url, $allow, $timeout) {
+    return array(
+        "url" => $url,
+        "limit" => BLOG_HTML_LIMIT,
+        "allow" => $allow,
+        "headers" => array("Accept-Language: en-US,en;q=0.9"),
+        "reject" => true,
+        "timeout" => $timeout,
+        "decode" => true,
+        "ua" => tistory_browser()
+    );
+}
+
+function blogger_live($name) {
+    $min = blogger_published_min();
+    $feedAllow = blogger_feed_allow($name);
+    $wave = fetch_urls(array(
+        blogger_job("https://" . $name . ".blogspot.com/", blogger_home_allow($name), 8),
+        blogger_job(blogger_feed_url($name, "posts", ""), $feedAllow, 6),
+        blogger_job(blogger_feed_url($name, "posts", $min), $feedAllow, 6),
+        blogger_job(blogger_feed_url($name, "comments", ""), $feedAllow, 6),
+        blogger_job(blogger_feed_url($name, "comments", $min), $feedAllow, 6)
+    ));
+    $posts = blogger_feed_total($wave[1][0], $wave[1][1]);
+    $comments = blogger_feed_total($wave[3][0], $wave[3][1]);
+    $postsToday = blogger_window_count($posts, blogger_feed_total($wave[2][0], $wave[2][1]));
+    $commentsToday = blogger_window_count($comments, blogger_feed_total($wave[4][0], $wave[4][1]));
+    $pageviews = null;
+    $todayGap = "unread";
+    $statsUrl = ($wave[0][0] === 200) ? blogger_stats_url($wave[0][1], $name) : "";
+    if ($statsUrl !== "") {
+        $todayGap = "alltime";
+        list($status, $body) = fetch_url(
+            $statsUrl,
+            100000,
+            blogger_stats_allow($name),
+            array("Referer: https://" . $name . ".blogspot.com/"),
+            true,
+            6,
+            true,
+            tistory_browser()
+        );
+        $pageviews = blogger_stats_total($status, $body);
+    }
+    $gaps = array("today" => $todayGap);
+    if ($posts === null) $gaps["posts"] = "unread";
+    if ($postsToday === null) $gaps["postsToday"] = "unread";
+    if ($comments === null) $gaps["comments"] = "unread";
+    if ($commentsToday === null) $gaps["commentsToday"] = "unread";
+    if ($pageviews === null) $gaps["total"] = "unread";
+    return array($posts, $comments, null, $pageviews, $postsToday, $commentsToday, $gaps);
+}
+
+function blogger_photo_url($name, $large) {
+    list($status, $body) = fetch_url(
+        blogger_feed_url($name, "posts", ""),
+        BLOG_HTML_LIMIT,
+        blogger_feed_allow($name),
+        array(),
+        true,
+        6,
+        true,
+        tistory_browser()
+    );
+    $image = ($status === 200) ? blogger_author_image($body, $large) : "";
+    if ($image !== "") return $image;
+    list($status, $html) = fetch_url(
+        "https://" . $name . ".blogspot.com/",
+        BLOG_HTML_LIMIT,
+        blogger_home_allow($name),
+        array("Accept-Language: en-US,en;q=0.9"),
+        true,
+        8,
+        true,
+        tistory_browser()
+    );
+    if ($status !== 200) return "";
+    return blogger_html_image($html, $large);
+}
+
 $blog = isset($_GET["blog"]) ? trim((string) $_GET["blog"]) : "";
 $kind = blog_kind($blog);
 if ($kind === "") deny();
@@ -1091,6 +1204,19 @@ if (isset($_GET["view"]) && (string) $_GET["view"] === "counts") {
         $row = naver_counts($id);
         send_counts($row[0], $row[1], $row[2], $row[3], $row[4], $row[5], $blog, isset($row[6]) ? $row[6] : array());
     }
+    if ($kind === "blogger") {
+        $name = blogspot_name(host_of($blog));
+        if ($name === "") send_counts(null, null, null, null, null, null, $blog, array(
+            "posts" => "unread",
+            "comments" => "unread",
+            "today" => "unread",
+            "total" => "unread",
+            "postsToday" => "unread",
+            "commentsToday" => "unread"
+        ));
+        $row = blogger_live($name);
+        send_counts($row[0], $row[1], $row[2], $row[3], $row[4], $row[5], $blog, isset($row[6]) ? $row[6] : array());
+    }
     $row = tistory_live(host_of($blog));
     send_counts($row[0], $row[1], $row[2], $row[3], $row[4], $row[5], $blog, isset($row[6]) ? $row[6] : array());
 }
@@ -1098,6 +1224,21 @@ if (isset($_GET["view"]) && (string) $_GET["view"] === "counts") {
 $large = isset($_GET["size"]) && (string) $_GET["size"] === "large";
 $cachedImage = read_cache("image", $blog, $large, "image");
 if ($cachedImage !== null) send_body($cachedImage[0], $cachedImage[1], 3600);
+
+if ($kind === "blogger") {
+    $name = blogspot_name(host_of($blog));
+    if ($name === "") deny();
+    $image = blogger_photo_url($name, $large);
+    if ($image === "" || !image_host_ok($image) || is_placeholder($image)) deny();
+    $imageLimit = $large ? 4000000 : IMAGE_LIMIT;
+    list($imageStatus, $bytes, $contentType) = fetch_url($image, $imageLimit, function ($url) {
+        return image_host_ok($url) && !is_placeholder($url);
+    }, array(), true);
+    $type = image_type($bytes, $contentType);
+    if ($imageStatus !== 200 || $type === "" || $bytes === "") deny();
+    write_cache("image", $blog, $large, $type, $bytes, 3600);
+    send_body($type, $bytes, 3600);
+}
 
 $fetchUrl = $blog;
 if ($kind === "naver") {

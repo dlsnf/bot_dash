@@ -121,6 +121,43 @@ expect("지난 날짜는 고치지 않는다", isset($untouched["2026-10-17"]), 
 $rejected = history_apply($history, "https://blog.naver.com/a", "2026-10-18", -1, $historyNow);
 expect("음수 방문자는 거절", $rejected["2026-10-18"]["https://blog.naver.com/a"], 9);
 
+expect("blogspot.com 이름", blogspot_name("doda-in-korea.blogspot.com"), "doda-in-korea");
+expect("blogspot.co.kr 이름", blogspot_name("doda-in-korea.blogspot.co.kr"), "doda-in-korea");
+expect("blogspot.com.au 이름", blogspot_name("doda-in-korea.blogspot.com.au"), "doda-in-korea");
+expect("다른 호스트는 블로거가 아니다", blogspot_name("blog.naver.com"), "");
+expect("blogspot 뒤에 다른 도메인은 거절", blogspot_name("name.blogspot.com.evil.com"), "");
+expect("www.blogspot.com 은 거절", blogspot_name("www.blogspot.com"), "");
+
+$bloggerNow = new DateTime("2026-10-19 15:07:07", new DateTimeZone("Asia/Seoul"));
+expect("24시간 전 시각", blogger_published_min($bloggerNow), "2026-10-18T15:07:07+09:00");
+expect("글 피드 주소", blogger_feed_url("doda-in-korea", "posts", ""), "https://doda-in-korea.blogspot.com/feeds/posts/default?alt=json&max-results=0");
+expect("댓글 구간 주소", blogger_feed_url("doda-in-korea", "comments", "2026-10-18T15:07:07+09:00"), "https://doda-in-korea.blogspot.com/feeds/comments/default?alt=json&max-results=0&published-min=2026-10-18T15%3A07%3A07%2B09%3A00");
+
+$feed = '{"feed":{"openSearch$totalResults":{"$t":"2"},"author":[{"gd$image":{"src":"https://blogger.googleusercontent.com/img/b/photo/s1600/face.jpg"}}]}}';
+expect("피드 글 수", blogger_feed_total(200, $feed), 2);
+expect("피드가 아니면 비움", blogger_feed_total(200, "<html></html>"), null);
+expect("글이 없으면 오늘도 0", blogger_window_count(0, 4), 0);
+expect("구간이 전체보다 크면 비움", blogger_window_count(2, 3), null);
+expect("구간 글 수", blogger_window_count(2, 1), 1);
+
+$thumb = blogger_author_image($feed, false);
+$large = blogger_author_image($feed, true);
+expect("썸네일은 s204", $thumb, "https://blogger.googleusercontent.com/img/b/photo/s204/face.jpg");
+expect("큰 사진은 s1600", $large, "https://blogger.googleusercontent.com/img/b/photo/s1600/face.jpg");
+expect("기본 이미지는 버린다", blogger_image_url("https://blogger.googleusercontent.com/img/b/U2hvZWJveA/h60/", false), "");
+expect("다른 호스트 사진은 버린다", blogger_image_url("https://evil.example/s1600/a.jpg", false), "");
+$htmlPhoto = "<img alt='My photo' class='profile-img' src='//lh3.googleusercontent.com/a/face=s80-c'/>";
+expect("화면 프로필의 크기", blogger_html_image($htmlPhoto, false), "https://lh3.googleusercontent.com/a/face=s204");
+
+$statsHtml = "<script>'statsUrl': '//doda-in-korea.blogspot.com/b/stats?style\\x3dBLACK_TRANSPARENT\\x26timeRange\\x3dALL_TIME\\x26token\\x3dANakCkvp4-token'</script>";
+expect("전체 페이지뷰 주소", blogger_stats_url($statsHtml, "doda-in-korea"), "https://doda-in-korea.blogspot.com/b/stats?style=BLACK_TRANSPARENT&timeRange=ALL_TIME&token=ANakCkvp4-token");
+expect("다른 블로그 토큰은 거절", blogger_stats_url($statsHtml, "other-blog"), "");
+$weekHtml = str_replace("ALL_TIME", "LAST_WEEK", $statsHtml);
+expect("일주일 범위는 전체로 쓰지 않는다", blogger_stats_url($weekHtml, "doda-in-korea"), "");
+expect("페이지뷰 합계", blogger_stats_total(200, '{"total":48,"sparklineData":[[29,96]]}'), 48);
+expect("페이지뷰 본문이 아니면 비움", blogger_stats_total(200, "<HTML>Forbidden</HTML>"), null);
+expect("음수 페이지뷰는 비움", blogger_stats_total(200, '{"total":-1}'), null);
+
 if ($failed > 0) {
     fwrite(STDERR, $failed . " failed\n");
     exit(1);

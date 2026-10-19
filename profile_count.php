@@ -351,6 +351,126 @@ function tistory_comment_total($counts, $postTotal) {
     return $sum;
 }
 
+function blogger_https_host($url) {
+    $parts = parse_url($url);
+    if (!is_array($parts)) return "";
+    if (empty($parts["scheme"]) || strtolower($parts["scheme"]) !== "https") return "";
+    if (!empty($parts["user"]) || !empty($parts["pass"])) return "";
+    if (isset($parts["port"]) && (int) $parts["port"] !== 443) return "";
+    return strtolower(isset($parts["host"]) ? $parts["host"] : "");
+}
+
+function blogspot_name($host) {
+    $host = strtolower((string) $host);
+    if (!preg_match('/^([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)\.blogspot\.([a-z0-9.]+)$/', $host, $matched)) return "";
+    if (!preg_match('/^(?:com|co\.[a-z]{2}|com\.[a-z]{2}|[a-z]{2})$/', $matched[2])) return "";
+    if ($matched[1] === "www") return "";
+    return $matched[1];
+}
+
+function blogger_published_min($now = null) {
+    $cutoff = seoul_clock($now);
+    $cutoff->modify("-24 hours");
+    return $cutoff->format("Y-m-d\\TH:i:sP");
+}
+
+function blogger_feed_url($name, $kind, $min) {
+    $path = $kind === "comments" ? "/feeds/comments/default" : "/feeds/posts/default";
+    $url = "https://" . $name . ".blogspot.com" . $path . "?alt=json&max-results=0";
+    if (is_string($min) && $min !== "") $url .= "&published-min=" . rawurlencode($min);
+    return $url;
+}
+
+function blogger_feed_total($status, $body) {
+    if ((int) $status !== 200 || !is_string($body) || $body === "" || $body[0] !== "{") return null;
+    $data = json_decode($body, true);
+    if (!is_array($data) || !isset($data["feed"]) || !is_array($data["feed"])) return null;
+    $node = isset($data["feed"]["openSearch\$totalResults"]) ? $data["feed"]["openSearch\$totalResults"] : null;
+    if (!is_array($node) || !isset($node["\$t"])) return null;
+    return as_count($node["\$t"]);
+}
+
+function blogger_window_count($total, $window) {
+    if ($total === 0) return 0;
+    if (!is_int($window)) return null;
+    if (is_int($total) && $window > $total) return null;
+    return $window;
+}
+
+function blogger_image_host($host) {
+    if ($host === "blogger.googleusercontent.com") return true;
+    if (preg_match('/^lh[3-6]\.googleusercontent\.com$/', $host)) return true;
+    if (preg_match('/^(?:[1-4]\.)?bp\.blogspot\.com$/', $host)) return true;
+    return false;
+}
+
+function blogger_image_usable($url) {
+    if (!blogger_image_host(blogger_https_host($url))) return false;
+    if (preg_match('/\/anon\d*\.png|default-avatar|\/U2hvZWJveA\/|blank\.gif/i', $url)) return false;
+    return true;
+}
+
+function blogger_https_url($url) {
+    $url = trim(html_entity_decode((string) $url, ENT_QUOTES, "UTF-8"));
+    if (strpos($url, "//") === 0) $url = "https:" . $url;
+    if (stripos($url, "http://") === 0) $url = "https://" . substr($url, 7);
+    if (blogger_https_host($url) === "") return "";
+    return $url;
+}
+
+function blogger_image_url($url, $large) {
+    $url = blogger_https_url($url);
+    if (!blogger_image_usable($url)) return "";
+    $size = $large ? "s1600" : "s204";
+    if (preg_match('#/s\d+/#', $url)) return preg_replace('#/s\d+/#', "/" . $size . "/", $url, 1);
+    if (preg_match('/=s\d+/', $url)) return preg_replace('/=s\d+(?:-[a-z0-9-]+)?/', "=" . $size, $url, 1);
+    return $url;
+}
+
+function blogger_author_image($body, $large) {
+    if (!is_string($body) || $body === "" || $body[0] !== "{") return "";
+    $data = json_decode($body, true);
+    if (!is_array($data) || !isset($data["feed"]["author"][0]) || !is_array($data["feed"]["author"][0])) return "";
+    $image = isset($data["feed"]["author"][0]["gd\$image"]) ? $data["feed"]["author"][0]["gd\$image"] : null;
+    if (!is_array($image) || empty($image["src"]) || !is_string($image["src"])) return "";
+    return blogger_image_url($image["src"], $large);
+}
+
+function blogger_html_image($html, $large) {
+    if (!is_string($html) || !preg_match('/<img\b[^>]*\bprofile-img\b[^>]*>/i', $html, $tag)) return "";
+    if (!preg_match('/\bsrc=(["\'])([^"\']+)\1/i', $tag[0], $src)) return "";
+    return blogger_image_url($src[2], $large);
+}
+
+function blogger_js_unescape($text) {
+    return preg_replace_callback('/\\\\x([0-9a-fA-F]{2})/', function ($matched) {
+        return chr(hexdec($matched[1]));
+    }, str_replace(array("\\/", "\\u0026", "\\u003d"), array("/", "&", "="), (string) $text));
+}
+
+function blogger_stats_url($html, $name) {
+    if (!is_string($html) || !preg_match('/statsUrl[\'"]?\s*:\s*([\'"])(.*?)\1/s', $html, $matched)) return "";
+    $url = blogger_https_url(blogger_js_unescape($matched[2]));
+    if (blogspot_name(blogger_https_host($url)) !== $name) return "";
+    $parts = parse_url($url);
+    if (!is_array($parts) || (isset($parts["path"]) ? $parts["path"] : "") !== "/b/stats") return "";
+    $query = array();
+    if (!empty($parts["query"])) parse_str($parts["query"], $query);
+    if (!isset($query["timeRange"]) || $query["timeRange"] !== "ALL_TIME") return "";
+    $token = isset($query["token"]) ? $query["token"] : "";
+    if (!is_string($token) || !preg_match('/^[A-Za-z0-9_-]{8,200}$/', $token)) return "";
+    return "https://" . blogger_https_host($url) . "/b/stats?style=BLACK_TRANSPARENT&timeRange=ALL_TIME&token=" . rawurlencode($token);
+}
+
+function blogger_stats_total($status, $body) {
+    if ((int) $status !== 200 || !is_string($body) || $body === "" || $body[0] !== "{") return null;
+    $data = json_decode($body, true);
+    if (!is_array($data) || !array_key_exists("total", $data)) return null;
+    if (is_int($data["total"])) return as_count($data["total"]);
+    if (is_string($data["total"])) return as_count($data["total"]);
+    return null;
+}
+
 /**
  * 블로그 하나의 오늘 방문자를 서울 날짜 칸에 넣는다.
  * 지난 날짜는 고치지 않고, 오늘로부터 13일보다 오래된 칸은 뺀다.
