@@ -28,6 +28,13 @@ cp .env.example /etc/bot_dash.env
 chmod 600 /etc/bot_dash.env
 ```
 
+운영 서버에서 이 파일을 다시 올리면 소유자가 바뀝니다. PHP 계정 `apache`만 읽도록 되돌립니다. 계정과 토큰 내용은 바뀌지 않습니다.
+
+```bash
+chown apache:apache /etc/bot_dash.env
+chmod 600 /etc/bot_dash.env
+```
+
 Windows에서는 같은 기본 경로가 드라이브 루트의 `C:\etc\bot_dash.env`입니다.
 
 ```powershell
@@ -50,6 +57,37 @@ python3 -m http.server 8080
 ```bash
 php -S 127.0.0.1:8080
 ```
+
+## 블로거 오늘 방문자
+
+블로거가 알려 주는 숫자는 전체 페이지뷰입니다. 오늘 방문자는 `data/blogger_totals.json`에 적힌 어제 전체에서 지금 전체를 뺀 값입니다. 어제 기록이 없으면 오늘 칸은 0으로 보입니다. 이 파일은 git에 들어가지 않으므로 서버에 따로 둡니다.
+
+웹 PHP가 이 파일을 읽고 쓸 수 있어야 오늘 숫자가 나옵니다. 운영 서버의 PHP 계정은 `apache`이고, 사이트 경로는 `/var/www/html/bot_dash`입니다. 그 폴더에서 권한을 이렇게 맞춥니다.
+
+```bash
+sudo chown apache:apache data data/blogger_totals.json
+sudo chmod 755 data
+sudo chmod 600 data/blogger_totals.json
+```
+
+`data`는 소유자가 들어갈 수 있는 755입니다. JSON은 소유자만 읽고 쓰는 600입니다. 기록이 성공할 때마다 프로그램이 JSON을 다시 600으로 되돌립니다. 655는 소유자의 폴더 진입 권한이 빠져서 쓰지 않습니다.
+
+블로거 오늘 계산 로그는 기본적으로 남지 않습니다. 서버 `/etc/bot_dash.env`에 `BOTDASH_COUNT_LOG=1`을 넣으면 `data/blogger_count.log`에 남습니다. `0`이거나 그 줄이 없으면 꺼집니다. 켠 상태에서 `data/`에 쓰지 못하면 `/tmp/botdash-blogger-count.log`에 남고, 집계 응답 헤더 `X-Botdash-Log`가 그 경로입니다.
+
+하루 마감은 브라우저 없이 `blogger_close.php`가 남깁니다. 서버 시계는 한국시간입니다. root crontab에 한 줄만 있습니다. root는 파일 소유자와 상관없이 JSON을 쓸 수 있어서 `apache` crontab은 따로 두지 않습니다. 같은 줄을 두 계정에 넣으면 23:50에 두 번 실행됩니다.
+
+```bash
+crontab -l 2>/dev/null | sed '/blogger_close\.php/d' | { cat; echo '50 23 * * * /usr/bin/php /var/www/html/bot_dash/blogger_close.php'; } | crontab -
+crontab -l
+```
+
+`crontab -l`에 아래 줄이 보이면 등록된 것입니다.
+
+```cron
+50 23 * * * /usr/bin/php /var/www/html/bot_dash/blogger_close.php
+```
+
+서버가 그 시각에 켜져 있어야 합니다. 시계가 한국시간이 아니면 줄 앞에 `CRON_TZ=Asia/Seoul`을 붙입니다. 첫날 기록만으로는 오늘 방문자가 나오지 않습니다. 다음 날 23:50 기록부터 어제 마감이 생겨서 오늘 방문자가 계산됩니다.
 
 ## 개인 데이터와 보안
 

@@ -83,16 +83,43 @@ function botdash_session_start() {
     session_start();
 }
 
+function botdash_end_session() {
+    botdash_session_start();
+    $_SESSION = array();
+    $params = session_get_cookie_params();
+    $path = isset($params["path"]) && is_string($params["path"]) && $params["path"] !== "" ? $params["path"] : "/";
+    $paths = array($path => true, "/" => true);
+    $samesite = isset($params["samesite"]) && is_string($params["samesite"]) && $params["samesite"] !== "" ? $params["samesite"] : "Lax";
+    if (ini_get("session.use_cookies")) {
+        foreach (array_keys($paths) as $cookiePath) {
+            setcookie(session_name(), "", array(
+                "expires" => time() - 42000,
+                "path" => $cookiePath,
+                "domain" => isset($params["domain"]) ? $params["domain"] : "",
+                "secure" => !empty($params["secure"]),
+                "httponly" => true,
+                "samesite" => $samesite
+            ));
+        }
+    }
+    session_destroy();
+}
+
 function botdash_mark($user, $pass) {
     return hash("sha256", $user . "\0" . $pass);
 }
 
 function botdash_logged_in() {
     botdash_session_start();
-    if (empty($_SESSION["botdash_ok"]) || empty($_SESSION["botdash_mark"])) return false;
-    list($user, $pass) = botdash_load_secrets();
-    if ($user === "" || $pass === "") return false;
-    return hash_equals(botdash_mark($user, $pass), (string) $_SESSION["botdash_mark"]);
+    $ok = false;
+    if (!empty($_SESSION["botdash_ok"]) && !empty($_SESSION["botdash_mark"])) {
+        list($user, $pass) = botdash_load_secrets();
+        if ($user !== "" && $pass !== "") {
+            $ok = hash_equals(botdash_mark($user, $pass), (string) $_SESSION["botdash_mark"]);
+        }
+    }
+    session_write_close();
+    return $ok;
 }
 
 function botdash_client_key() {

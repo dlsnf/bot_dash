@@ -4,11 +4,15 @@
  * size=large 는 카드용으로 줄인 사진 대신 더 큰 원본에 가까운 사진을 돌려준다.
  * 사진이 없거나 기본 이미지면 404. 화면은 그때 기본 캐릭터 이미지를 쓴다.
  * view=counts 는 {"posts","comments","today","total","postsToday","commentsToday"} 를 돌려준다.
- * 값은 정수이거나 null이다. postsToday, commentsToday 는 최근 24시간 동안 올라온 개수다.
+ * 값은 정수이거나 null이다. postsToday, commentsToday 는 한국시간 오늘 0시부터 올라온 개수다.
  * null 인 칸은 gaps 에 이유를 붙인다.
  * Blogger 전체 페이지뷰는 계정 토큰이 있으면 API를, 없으면 공개 카운터를 쓴다.
  * 오늘 페이지뷰는 data/blogger_totals.json 의 어제 마감 전체를 지금 전체에서 뺀 값이다.
- * 어제 마감이 없으면 today 는 null 이고 gaps.today 는 alltime 이다.
+ * 마감은 대시보드 집계와 blogger_close.php 가 남긴다. 같은 날에는 더 큰 전체만 남긴다.
+ * 어제 마감이 없으면 today 는 null 이고 gaps.today 는 alltime 이다. 화면은 그때 0을 그린다.
+ * BOTDASH_COUNT_LOG=1 일 때만 그 이유를 data/blogger_count.log 에 남긴다. 기본은 꺼져 있다.
+ * data 에 쓰지 못하면 임시 폴더의 botdash-blogger-count.log, 거기도 안 되면 PHP 오류 로그의 [botdash] 다.
+ * 집계 응답의 X-Botdash-Log 가 실제 위치다.
  * 블로그 주소 외의 요청은 받지 않고, 받아 온 본문은 그대로 내보내지 않는다.
  */
 if (!defined("BOTDASH_PROFILE_LIBRARY")) {
@@ -23,6 +27,10 @@ if (!defined("BOTDASH_PROFILE_LIBRARY")) {
         session_cache_limiter("");
     }
     if (!botdash_logged_in()) {
+        if (isset($_GET["view"]) && (string) $_GET["view"] === "counts") {
+            $requested = isset($_GET["blog"]) ? trim((string) $_GET["blog"]) : "";
+            blogger_count_log("로그인 없이 집계 요청 blog=" . $requested);
+        }
         http_response_code(401);
         header("Content-Type: text/plain; charset=utf-8");
         header_remove("Pragma");
@@ -438,7 +446,7 @@ function send_counts($posts, $comments, $today = null, $total = null, $postsToda
     $json = json_encode($payload);
     if (!is_string($json) || $json === "") $json = "{}";
     if ($cacheBlog !== "" && $json !== "{}") {
-        write_cache("counts24", $cacheBlog, false, "application/json; charset=utf-8", $json, 600);
+        write_cache("countsDay", $cacheBlog, false, "application/json; charset=utf-8", $json, 600);
     }
     send_body("application/json; charset=utf-8", $json, 600);
 }
@@ -638,7 +646,7 @@ function naver_counts($id) {
     if ($status !== 200 || !preg_match('/"totalCount"\s*:\s*"?(\d+)/', $body, $totalMatch)) {
         return naver_count_row(null, null, $visitors[0], $visitors[1], null, null, array());
     }
-    // 목록의 "5분 전"은 화면 문구라서 빠질 수 있다. RSS 발행 시각이 있으면 지금으로부터 24시간을 센다.
+    // 목록의 "5분 전"은 화면 문구라서 빠질 수 있다. RSS 발행 시각이 있으면 한국시간 오늘을 센다.
     $postsToday = ($rssStatus === 200 && $xml !== "") ? rss_posts_on_day($xml) : null;
     if ($postsToday === null) $postsToday = count_days($body, '/"addDate"\s*:\s*"([^"]+)"/');
     $postTimes = naver_post_times($body, ($rssStatus === 200 && $xml !== "") ? $xml : "");
@@ -693,7 +701,7 @@ function naver_counts($id) {
         $pageCounts[$logNo] = $count;
         $sum += $count;
         if ($count === 0) continue;
-        // 글이 24시간 안이면 그 글의 댓글도 그 안이다. 시각이 없다고 0으로 두지 않는다.
+        // 글이 한국시간 오늘이면 그 글의 댓글도 오늘이다. 시각이 없다고 0으로 두지 않는다.
         $postRaw = isset($postTimes[$logNo]) ? $postTimes[$logNo] : "";
         $fresh = comments_on_fresh_post($postRaw, $count);
         if ($fresh === null) {
@@ -1201,34 +1209,130 @@ function blogger_totals_path() {
     return __DIR__ . "/data/blogger_totals.json";
 }
 
+function blogger_count_log_path() {
+    return __DIR__ . "/data/blogger_count.log";
+}
+
+function blogger_path_state($path) {
+    $bits = array("path=" . $path);
+    $exists = is_file($path) || is_dir($path);
+    $bits[] = $exists ? "있음" : "없음";
+    if ($exists) {
+        $perm = @fileperms($path);
+        if (is_int($perm)) $bits[] = "mode=" . substr(sprintf("%o", $perm), -4);
+        $owner = @fileowner($path);
+        if (is_int($owner)) {
+            $bits[] = "owner=" . $owner;
+            if (function_exists("posix_getpwuid")) {
+                $info = @posix_getpwuid($owner);
+                if (is_array($info) && isset($info["name"]) && is_string($info["name"])) $bits[] = "ownername=" . $info["name"];
+            }
+        }
+    }
+    if (function_exists("posix_geteuid")) {
+        $uid = posix_geteuid();
+        $bits[] = "euid=" . $uid;
+        if (function_exists("posix_getpwuid")) {
+            $info = @posix_getpwuid($uid);
+            if (is_array($info) && isset($info["name"]) && is_string($info["name"])) $bits[] = "user=" . $info["name"];
+        }
+    }
+    $bits[] = is_readable($path) ? "읽기가능" : "읽기불가";
+    $bits[] = is_writable($path) ? "쓰기가능" : "쓰기불가";
+    return implode(" ", $bits);
+}
+
+function blogger_count_write($path, $line) {
+    $dir = dirname($path);
+    if (!is_dir($dir)) @mkdir($dir, 0755, true);
+    if (!is_dir($dir) || !is_writable($dir)) return false;
+    $fh = @fopen($path, "a");
+    if (!$fh) return false;
+    $written = false;
+    if (flock($fh, LOCK_EX)) {
+        $written = fwrite($fh, $line . "\n") !== false;
+        fflush($fh);
+        flock($fh, LOCK_UN);
+    }
+    fclose($fh);
+    if ($written) @chmod($path, 0644);
+    return $written;
+}
+
+function blogger_count_log_enabled() {
+    $vars = botdash_env_vars();
+    $value = isset($vars["BOTDASH_COUNT_LOG"]) ? $vars["BOTDASH_COUNT_LOG"] : "";
+    return botdash_flag_on(is_string($value) ? $value : "");
+}
+
+function blogger_count_log($message) {
+    if (!blogger_count_log_enabled()) return;
+    $line = seoul_clock()->format("Y-m-d\\TH:i:sP") . " " . str_replace(array("\r", "\n"), " ", (string) $message);
+    $saved = array();
+    if (blogger_count_write(blogger_count_log_path(), $line)) $saved[] = blogger_count_log_path();
+    if (!$saved) {
+        $tmp = rtrim(sys_get_temp_dir(), "/\\") . "/botdash-blogger-count.log";
+        if (blogger_count_write($tmp, $line)) $saved[] = $tmp;
+    }
+    if (!$saved) error_log("[botdash] " . $line);
+    if (PHP_SAPI !== "cli" && !headers_sent()) {
+        header("X-Botdash-Log: " . ($saved ? implode(", ", $saved) : "error_log"));
+    }
+}
+
 function blogger_record_total($blog, $total) {
     $total = count_or_null($total);
-    if (blog_kind($blog) !== "blogger" || !is_int($total)) return null;
+    if (blog_kind($blog) !== "blogger" || !is_int($total)) {
+        blogger_count_log($blog . " 오늘 계산 실패: 블로거 주소가 아니거나 전체가 없음");
+        return null;
+    }
     $path = blogger_totals_path();
     $dir = dirname($path);
-    if (!is_dir($dir) || !is_writable($dir)) return null;
+    if (!is_dir($dir) || !is_writable($dir)) {
+        blogger_count_log($blog . " 오늘 계산 실패: data 폴더를 쓸 수 없음 " . blogger_path_state($dir));
+        return null;
+    }
     $fh = @fopen($path, "c+");
-    if (!$fh) return null;
+    if (!$fh) {
+        blogger_count_log($blog . " 오늘 계산 실패: 파일을 열지 못함 " . blogger_path_state($path));
+        return null;
+    }
     if (!flock($fh, LOCK_EX)) {
         fclose($fh);
+        blogger_count_log($blog . " 오늘 계산 실패: 파일 잠금을 얻지 못함 " . blogger_path_state($path));
         return null;
     }
     $raw = stream_get_contents($fh);
-    $data = json_decode(is_string($raw) ? $raw : "", true);
+    if (!is_string($raw) || $raw === "") $data = array();
+    else {
+        $data = json_decode($raw, true);
+        if (!is_array($data)) {
+            blogger_count_log($blog . " 오늘 계산 실패: 기록 파일이 JSON이 아님");
+            $data = array();
+        }
+    }
     $clock = seoul_clock();
     $stored = blogger_total_apply(is_array($data) ? $data : array(), $blog, $clock->format("Y-m-d"), $total, $clock);
     $today = blogger_today_count($stored, $blog, $total, $clock);
+    if ($today === null) {
+        blogger_count_log($blog . " 오늘 계산 실패: " . blogger_today_gap_reason($stored, $blog, $total, $clock));
+    } else {
+        $base = $total - $today;
+        blogger_count_log($blog . " 전체 " . $total . " 어제 " . $base . " 오늘 " . $today);
+    }
     $json = json_encode($stored, JSON_UNESCAPED_SLASHES);
+    $wrote = false;
     if (is_string($json)) {
         rewind($fh);
-        if (ftruncate($fh, 0)) {
-            fwrite($fh, $json);
+        if (ftruncate($fh, 0) && fwrite($fh, $json) !== false) {
             fflush($fh);
+            $wrote = true;
         }
     }
     flock($fh, LOCK_UN);
     fclose($fh);
-    @chmod($path, 0600);
+    if ($wrote) @chmod($path, 0600);
+    else blogger_count_log($blog . " 오늘 계산 실패: 마감 파일을 쓰지 못함 " . blogger_path_state($path));
     return $today;
 }
 
@@ -1236,7 +1340,10 @@ function blogger_cached_counts($blog, $data) {
     if (!is_array($data)) return $data;
     $total = isset($data["total"]) ? $data["total"] : null;
     if (is_string($total) && preg_match('/^\d{1,12}$/', $total)) $total = (int) $total;
-    if (!is_int($total)) return $data;
+    if (!is_int($total)) {
+        blogger_count_log($blog . " 오늘 계산 실패: 저장된 집계에 전체가 없음");
+        return $data;
+    }
     $today = blogger_record_total($blog, $total);
     $data["today"] = $today;
     if (!isset($data["gaps"]) || !is_array($data["gaps"])) $data["gaps"] = array();
@@ -1257,6 +1364,36 @@ function blogger_job($url, $allow, $timeout) {
         "decode" => true,
         "ua" => tistory_browser()
     );
+}
+
+function blogger_alltime($name) {
+    if (!is_string($name) || blogspot_name($name . ".blogspot.com") !== $name) return null;
+    $total = blogger_api_total($name);
+    if (is_int($total)) return $total;
+    list($status, $body) = fetch_url(
+        "https://" . $name . ".blogspot.com/",
+        BLOG_HTML_LIMIT,
+        blogger_home_allow($name),
+        array("Accept-Language: en-US,en;q=0.9"),
+        true,
+        8,
+        true,
+        tistory_browser()
+    );
+    if ($status !== 200) return null;
+    $statsUrl = blogger_stats_url($body, $name);
+    if ($statsUrl === "") return null;
+    list($status, $body) = fetch_url(
+        $statsUrl,
+        100000,
+        blogger_stats_allow($name),
+        array("Referer: https://" . $name . ".blogspot.com/"),
+        true,
+        6,
+        true,
+        tistory_browser()
+    );
+    return blogger_stats_total($status, $body);
 }
 
 function blogger_live($name) {
@@ -1334,13 +1471,17 @@ $kind = blog_kind($blog);
 if ($kind === "") deny();
 
 if (isset($_GET["view"]) && (string) $_GET["view"] === "counts") {
-    $cached = read_cache("counts24", $blog, false, "json");
+    blogger_count_log("집계 요청 kind=" . $kind . " blog=" . $blog);
+    $cached = read_cache("countsDay", $blog, false, "json");
     if ($cached !== null) {
         $cachedData = json_decode($cached[1], true);
         if ($kind === "blogger" && is_array($cachedData)) {
             $cachedData = blogger_cached_counts($blog, $cachedData);
             $body = json_encode($cachedData);
             if (is_string($body)) send_body($cached[0], $body, 600);
+            blogger_count_log($blog . " 오늘 계산 실패: 응답을 만들지 못함");
+        } elseif ($kind === "blogger") {
+            blogger_count_log($blog . " 오늘 계산 실패: 저장된 집계 본문이 아님");
         }
         send_body($cached[0], $cached[1], 600);
     }
@@ -1359,7 +1500,9 @@ if (isset($_GET["view"]) && (string) $_GET["view"] === "counts") {
     }
     if ($kind === "blogger") {
         $name = blogspot_name(host_of($blog));
-        if ($name === "") send_counts(null, null, null, null, null, null, $blog, array(
+        if ($name === "") {
+            blogger_count_log($blog . " 오늘 계산 실패: 블로거 주소를 읽지 못함");
+            send_counts(null, null, null, null, null, null, $blog, array(
             "posts" => "unread",
             "comments" => "unread",
             "today" => "unread",
@@ -1367,6 +1510,7 @@ if (isset($_GET["view"]) && (string) $_GET["view"] === "counts") {
             "postsToday" => "unread",
             "commentsToday" => "unread"
         ));
+        }
         $row = blogger_live($name);
         $gaps = isset($row[6]) && is_array($row[6]) ? $row[6] : array();
         $today = null;
@@ -1374,6 +1518,8 @@ if (isset($_GET["view"]) && (string) $_GET["view"] === "counts") {
             $today = blogger_record_total($blog, $row[3]);
             if ($today === null) $gaps["today"] = "alltime";
             else unset($gaps["today"]);
+        } else {
+            blogger_count_log($blog . " 오늘 계산 실패: 전체를 읽지 못함");
         }
         send_counts($row[0], $row[1], $today, $row[3], $row[4], $row[5], $blog, $gaps);
     }

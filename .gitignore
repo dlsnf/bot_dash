@@ -2,8 +2,8 @@
 characters/
 characters/**/*.md
 data/stats.json
-data/history.json
 data/blogger_totals.json
+data/blogger_count.log
 js/config.js
 *.local
 .env

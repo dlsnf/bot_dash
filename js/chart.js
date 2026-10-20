@@ -49,6 +49,11 @@
     deps.paintStatic(reel, value);
   }
 
+  function chartNumber(row, field) {
+    var value = row && row[field];
+    return typeof value === "number" && isFinite(value) ? value : 0;
+  }
+
   function followChartValues(chart) {
     if (!chart || !chart.canvas || !chart.scales || !chart.scales.y) return;
     var host = chart.canvas.parentNode.querySelector(".chart-values");
@@ -56,6 +61,7 @@
     var meta = chart.getDatasetMeta(0);
     if (!host || !meta || !meta.data) return;
     var scale = chart.scales.y;
+    var field = chart.$valueField || "todayVisitors";
     rows.forEach(function (row, index) {
       var el = host.querySelector('[data-chart-value="' + row.id + '"]');
       var bar = meta.data[index];
@@ -63,13 +69,14 @@
       el.style.left = bar.x + "px";
       el.style.top = bar.y + "px";
       if (!chart.$rise) return;
-      showChartCount(el, chartBarValue(bar, scale, row.todayVisitors || 0));
+      showChartCount(el, chartBarValue(bar, scale, chartNumber(row, field)));
     });
   }
 
   function syncChartValues(chart, rows, replay, rise) {
     var host = chartValueHost(chart.canvas.parentNode);
     var seen = {};
+    var field = chart.$valueField || "todayVisitors";
     rows.forEach(function (row) {
       seen[row.id] = true;
       var el = host.querySelector('[data-chart-value="' + row.id + '"]');
@@ -89,7 +96,7 @@
       }
       el._chartShown = null;
       if (rise) deps.paintStatic(reel, 0);
-      else deps.setOdometer(reel, row.todayVisitors || 0);
+      else deps.setOdometer(reel, chartNumber(row, field));
     });
     Array.prototype.slice.call(host.children).forEach(function (child) {
       if (!seen[child.getAttribute("data-chart-value")]) child.remove();
@@ -104,16 +111,47 @@
     }
   };
 
+  function totalBarColor(row) {
+    var value = row.totalVisitors;
+    if (value == null || !isFinite(value)) return "#3a3a48";
+    if (value === 0) return "#6e6e80";
+    return "#3dbea5";
+  }
+
+  function chartSpec(metric) {
+    if (metric === "total") {
+      return {
+        field: "totalVisitors",
+        stateKey: "totalChart",
+        wrapId: "totalChartWrap",
+        canvasId: "totalChart",
+        emptyId: "totalChartEmpty",
+        label: "전체 방문자",
+        color: totalBarColor
+      };
+    }
+    return {
+      field: "todayVisitors",
+      stateKey: "chart",
+      wrapId: "chartWrap",
+      canvasId: "visitorChart",
+      emptyId: "chartEmpty",
+      label: "오늘 방문자",
+      color: barColor
+    };
+  }
+
   function renderChart(options) {
-    var wrap = document.getElementById("chartWrap");
-    var empty = document.getElementById("chartEmpty");
-    var canvas = document.getElementById("visitorChart");
+    var spec = chartSpec(options && options.metric);
+    var wrap = document.getElementById(spec.wrapId);
+    var empty = document.getElementById(spec.emptyId);
+    var canvas = document.getElementById(spec.canvasId);
     if (!wrap || !canvas) return;
-    var existed = !!deps.state.chart;
+    var existed = !!deps.state[spec.stateKey];
     var rise = !deps.reducedMotion && (!!(options && options.rise) || !existed);
-    if (deps.state.chart) {
-      deps.state.chart.destroy();
-      deps.state.chart = null;
+    if (deps.state[spec.stateKey]) {
+      deps.state[spec.stateKey].destroy();
+      deps.state[spec.stateKey] = null;
     }
     var rows = deps.visibleCharacters().filter(function (row) { return row.ok; });
     if (!rows.length || typeof Chart === "undefined") {
@@ -129,15 +167,15 @@
     wrap.hidden = false;
     if (empty) empty.hidden = true;
     try {
-      deps.state.chart = new Chart(canvas, {
+      var chart = new Chart(canvas, {
         type: "bar",
         plugins: [barValuePlugin],
         data: {
           labels: rows.map(function (row) { return row.name; }),
           datasets: [{
-            label: "오늘 방문자",
-            data: rows.map(function (row) { return row.todayVisitors || 0; }),
-            backgroundColor: rows.map(barColor),
+            label: spec.label,
+            data: rows.map(function (row) { return chartNumber(row, spec.field); }),
+            backgroundColor: rows.map(spec.color),
             borderRadius: 8,
             maxBarThickness: 64
           }]
@@ -155,7 +193,7 @@
               borderColor: "#2c2c3a",
               borderWidth: 1,
               callbacks: {
-                label: function (item) { return "오늘 방문자 " + deps.formatNumber(item.parsed.y); }
+                label: function (item) { return spec.label + " " + deps.formatNumber(item.parsed.y); }
               }
             }
           },
@@ -166,10 +204,12 @@
           }
         }
       });
-      deps.state.chart.$rise = rise;
-      deps.state.chart.$chartRows = rows;
-      syncChartValues(deps.state.chart, rows, !!(options && options.replay), rise);
-      followChartValues(deps.state.chart);
+      chart.$rise = rise;
+      chart.$valueField = spec.field;
+      chart.$chartRows = rows;
+      deps.state[spec.stateKey] = chart;
+      syncChartValues(chart, rows, !!(options && options.replay), rise);
+      followChartValues(chart);
     } catch (error) {
       wrap.hidden = true;
       if (empty) {

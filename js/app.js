@@ -29,7 +29,8 @@
     attempts: "botdash_login_attempts",
     next: "botdash_next",
     scroll: "botdash_scroll",
-    order: "botdash_order"
+    order: "botdash_order",
+    counts: "botdash_counts"
   };
   var FILTERS = { all: 1, has: 1, zero: 1 };
   var SORTS = { visitors_desc: 1, visitors_asc: 1, name: 1, drop: 1, posts: 1 };
@@ -57,6 +58,10 @@
     queryRaw: "",
     view: "cards",
     chart: null,
+    totalChart: null,
+    chartRiseUntil: 0,
+    chartRiseTimer: 0,
+    chartRisePending: false,
     modalOpen: false,
     photoOpen: false,
     blogCounts: {},
@@ -499,14 +504,19 @@
     );
   }
 
-  // 스켈레톤에서 처음 숫자가 나오거나, 이미 보이던 릴의 값이 바뀔 때만 올린다.
+  function reelHasCount(reel) {
+    if (!reel) return false;
+    if (reel._reelBusy) return true;
+    return typeof reel._reelCurrent === "number";
+  }
+
+  // 처음 숫자와 저장값에서 올라가는 중에는 확정 숫자로 바꾸지 않는다.
   function paintCountInstant(host, reel) {
     if (!state.countsShown) return false;
-    if (reel && typeof reel._reelCurrent === "number") return false;
+    if (reelHasCount(reel)) return false;
     if (!host) return true;
     if (host.getAttribute("aria-busy") === "true" || host.querySelector(".skeleton")) return false;
-    var nested = host.querySelector(".odometer");
-    if (nested && typeof nested._reelCurrent === "number") return false;
+    if (reelHasCount(host.querySelector(".odometer"))) return false;
     return true;
   }
 
@@ -522,10 +532,14 @@
     if (!countsPending()) state.countsShown = true;
   }
 
-  // 스켈레톤이 숫자로 바뀌는 순간만 짧게 페이드한다. 이후 갱신은 그대로 둔다.
+  // 스켈레톤이나 첫 화면의 저장값이 숫자로 바뀌는 순간만 짧게 페이드한다.
   function fadeCount(el) {
     if (!el || reducedMotion) return;
-    if (el.getAttribute("aria-busy") !== "true" && !el.querySelector(".skeleton")) return;
+    var fromSkeleton = el.getAttribute("aria-busy") === "true" || !!el.querySelector(".skeleton");
+    if (!fromSkeleton) {
+      if (state.countsShown || el._countFaded) return;
+      el._countFaded = true;
+    }
     playCountFade(el);
   }
 
@@ -1224,7 +1238,7 @@
       plus.appendChild(reel);
       host.appendChild(plus);
     }
-    plus.title = "최근 24시간 동안 올라온 " + label + " " + formatNumber(today);
+    plus.title = "오늘 올라온 " + label + " " + formatNumber(today);
     showReel(plus.querySelector(".odometer"), today, host);
   }
 
@@ -1268,6 +1282,69 @@
     return out;
   }
 
+  // 마지막으로 받은 집계. 다음 화면에서는 이 값을 먼저 그리고, 뒤에서 다시 받아 반영한다.
+  function readCountCache() {
+    var parsed = null;
+    try { parsed = JSON.parse(storageGet(STORAGE.counts) || ""); } catch (error) { return {}; }
+    if (!parsed || typeof parsed !== "object") return {};
+    return parsed;
+  }
+
+  function knownCountKeys() {
+    var keys = {};
+    state.characters.forEach(function (character) {
+      (character.blogs || []).forEach(function (blog) {
+        var key = countableBlogUrl(blog.url || "");
+        if (key) keys[key] = true;
+      });
+    });
+    return keys;
+  }
+
+  function rememberCount(key) {
+    var data = state.blogCounts[key];
+    if (!key || !data || data.status !== "ok" || data.cached) return;
+    var map = readCountCache();
+    map[key] = {
+      posts: data.posts,
+      comments: data.comments,
+      today: data.today,
+      total: data.total,
+      postsToday: data.postsToday,
+      commentsToday: data.commentsToday,
+      gaps: data.gaps || {}
+    };
+    var known = knownCountKeys();
+    if (Object.keys(known).length) {
+      Object.keys(map).forEach(function (saved) {
+        if (!known[saved]) delete map[saved];
+      });
+    }
+    storageSet(STORAGE.counts, JSON.stringify(map));
+  }
+
+  function seedCachedCounts() {
+    var map = readCountCache();
+    state.characters.forEach(function (character) {
+      (character.blogs || []).forEach(function (blog) {
+        var key = countableBlogUrl(blog.url || "");
+        var row = key && map[key];
+        if (!key || state.blogCounts[key] || !row || typeof row !== "object") return;
+        state.blogCounts[key] = {
+          status: "ok",
+          cached: true,
+          posts: normalizeCount(row.posts),
+          comments: normalizeCount(row.comments),
+          today: normalizeCount(row.today),
+          total: normalizeCount(row.total),
+          postsToday: normalizeCount(row.postsToday),
+          commentsToday: normalizeCount(row.commentsToday),
+          gaps: normalizeGaps(row)
+        };
+      });
+    });
+  }
+
   function paintCountGap(span, text) {
     var host = span.querySelector(".count-pair") || span;
     var gap = host.querySelector(".count-gap");
@@ -1299,7 +1376,7 @@
     var key = countableBlogUrl(url);
     var data = key ? state.blogCounts[key] : null;
     var activity = el.getAttribute("data-counts-mode") === "activity";
-    var loading = !!(key && (countsBlockPaint() || !data || data.status === "loading"));
+    var loading = blogCountLoading(key);
     el.classList.toggle("is-loading", loading);
     if (loading) el.setAttribute("aria-busy", "true");
     else el.removeAttribute("aria-busy");
@@ -1345,7 +1422,7 @@
         if (loadingPair) loadingPair.replaceChildren(countSkeleton("sk-count"));
         return;
       }
-      // 총 6개 중 최근 24시간에 2개면 6이 아니라 4+2. 그 수가 없거나 총수보다 크면 총수만 보여 준다.
+      // 총 6개 중 오늘 2개면 6이 아니라 4+2. 그 수가 없거나 총수보다 크면 총수만 보여 준다.
       var showPlus = (item.label === "글" || item.label === "댓글")
         && typeof item.value === "number"
         && typeof item.today === "number"
@@ -1363,7 +1440,7 @@
       paintCountGap(span, !showPlus && item.today == null && item.todayField ? sideGapText(data, item.todayField) : "");
       var pair = span.querySelector(".count-pair");
       if (pair) fadeCount(pair);
-      // +24시간 칸에도 odometer 가 있다. 쌍의 직계 자식만 본 숫자로 본다.
+      // 오늘 추가분 칸에도 odometer 가 있다. 쌍의 직계 자식만 본 숫자로 본다.
       var reel = null;
       if (pair) {
         for (var reelIndex = 0; reelIndex < pair.children.length; reelIndex++) {
@@ -1417,6 +1494,7 @@
       commentsToday: normalizeCount(data && data.commentsToday),
       gaps: data && data.gaps ? normalizeGaps(data) : null
     };
+    rememberCount(key);
   }
 
   // 이미 보이는 숫자에서 새 숫자로 올린다. 집계 중으로 바꾸면 릴이 지워져 0부터 다시 센다.
@@ -1536,9 +1614,9 @@
     armCountRefresh(false);
   }
 
-  // 첫 조회는 서버가 준 10분 캐시를 쓴다. 정각 갱신만 서버를 다시 친다.
+  // 첫 조회는 저장해 둔 집계를 먼저 그린 뒤 서버의 10분 캐시로 뒤에서 다시 받는다. 정각 갱신만 서버를 다시 친다.
   function fetchCounts(key, cacheMode) {
-    return fetch("profile.php?view=counts&window=24h&blog=" + encodeURIComponent(key), {
+    return fetch("profile.php?view=counts&window=today&blog=" + encodeURIComponent(key), {
       credentials: "same-origin",
       cache: cacheMode || "default",
       headers: { "Accept": "application/json" }
@@ -1546,12 +1624,20 @@
   }
 
   function requestBlogCounts() {
+    seedCachedCounts();
     var pending = [];
+    var seen = {};
     state.characters.forEach(function (character) {
       (character.blogs || []).forEach(function (blog) {
         var key = countableBlogUrl(blog.url || "");
-        if (!key || state.blogCounts[key]) return;
-        state.blogCounts[key] = { status: "loading" };
+        if (!key || seen[key]) return;
+        seen[key] = true;
+        if (!state.blogCounts[key]) state.blogCounts[key] = { status: "loading" };
+        var row = state.blogCounts[key];
+        var stale = !!(row.cached && !row.settled);
+        if (row.status !== "loading" && !stale) return;
+        if (row.refreshing) return;
+        row.refreshing = true;
         pending.push(key);
       });
     });
@@ -1560,7 +1646,10 @@
       releaseCountIconHold();
       return;
     }
+    // 받아 오는 동안 이미 그린 숫자는 유지한다. 응답이 모이면 한 번에 바꾼다.
+    state.countRefreshBusy = true;
     syncCountReloadSpin();
+    var incoming = {};
     var left = pending.length;
     pending.forEach(function (key) {
       fetchCounts(key, "default")
@@ -1570,17 +1659,32 @@
         })
         .then(function (data) {
           if (gen !== state.countRefreshGen) return;
-          applyCountPayload(key, data);
-          applyLiveCounts(key);
+          incoming[key] = { ok: true, data: data };
         })
         .catch(function () {
           if (gen !== state.countRefreshGen) return;
-          state.blogCounts[key] = { status: "fail" };
-          applyLiveCounts(key);
+          incoming[key] = { ok: false };
         })
         .then(function () {
           left -= 1;
           if (left > 0 || gen !== state.countRefreshGen) return;
+          pending.forEach(function (doneKey) {
+            var item = incoming[doneKey];
+            if (item && item.ok) {
+              applyCountPayload(doneKey, item.data);
+              return;
+            }
+            var current = state.blogCounts[doneKey];
+            if (current && current.status === "ok" && current.cached) {
+              current.settled = true;
+              current.refreshing = false;
+              return;
+            }
+            state.blogCounts[doneKey] = { status: "fail" };
+          });
+          state.countRefreshBusy = false;
+          syncCountReloadSpin();
+          applyLiveCounts(null);
           releaseCountIconHold();
         });
     });
@@ -1631,7 +1735,7 @@
   function applyVisitorBlog(block, url) {
     var key = countableBlogUrl(url);
     var data = key ? state.blogCounts[key] : null;
-    var loading = !!(key && (countsBlockPaint() || !data || data.status === "loading"));
+    var loading = blogCountLoading(key);
     var today = displayToday(data);
     var total = data && data.status === "ok" ? data.total : null;
     var num = block.querySelector("[data-blog-today]");
@@ -1657,7 +1761,9 @@
         var revealTotal = totalEl.getAttribute("aria-busy") === "true" || !!totalEl.querySelector(".skeleton");
         totalEl.removeAttribute("aria-busy");
         showCountOrGap(totalEl, total, data, "total", "전체 ");
-        if (revealTotal) playCountFade(totalEl.querySelector(".odometer"));
+        var totalReel = totalEl.querySelector(".odometer");
+        if (revealTotal) playCountFade(totalReel);
+        else fadeCount(totalReel);
       }
     }
     ["unknown", "zero", "low", "mid", "high"].forEach(function (name) {
@@ -1810,6 +1916,8 @@
   }
 
   function paintLivePlaceholders() {
+    // 저장해 둔 집계가 다 있으면 숫자를 스켈레톤으로 되돌리지 않는다.
+    if (!countsBlockPaint()) return;
     paintPendingValue(document.getElementById("statVisitors"), "sk-metric-num");
     paintPendingValue(document.getElementById("statTotal"), "sk-metric-num");
     ["count-has", "count-zero"].forEach(function (id) {
@@ -2099,7 +2207,7 @@
   function countCell(blog, field) {
     var key = countableBlogUrl(blog.url || "");
     var data = key && state.blogCounts[key];
-    var loading = !!(key && (countsBlockPaint() || !data || data.status === "loading"));
+    var loading = blogCountLoading(key);
     var td = h("td", { class: "num", "data-blog-key": key, "data-blog-field": field });
     if (loading) {
       td.setAttribute("aria-busy", "true");
@@ -2123,7 +2231,7 @@
       var label = field === "posts" ? "글" : "댓글";
       wrap.appendChild(h("span", {
         class: "count-plus",
-        title: "최근 24시간 동안 올라온 " + label + " " + formatNumber(today)
+        title: "오늘 올라온 " + label + " " + formatNumber(today)
       }, h("span", { class: "count-plus-sign", "aria-hidden": "true", text: "+" }), formatNumber(today)));
     } else if (today == null && sideGapText(data, todayField)) {
       wrap.appendChild(h("span", { class: "count-gap", text: sideGapText(data, todayField) }));
@@ -2135,7 +2243,7 @@
     var key = td.getAttribute("data-blog-key");
     var field = td.getAttribute("data-blog-field");
     var data = key && state.blogCounts[key];
-    var loading = !!(key && (countsBlockPaint() || !data || data.status === "loading"));
+    var loading = blogCountLoading(key);
     if (loading) {
       td.setAttribute("aria-busy", "true");
       td.replaceChildren(countSkeleton("sk-count"));
@@ -2210,27 +2318,63 @@
     wrap.setAttribute("aria-busy", "true");
   }
 
-  function holdChart() {
-    var empty = document.getElementById("chartEmpty");
-    if (empty) empty.hidden = true;
-    holdWrap("chartWrap");
-    if (state.chart && state.chart.destroy) {
-      state.chart.destroy();
-      state.chart = null;
+  function clearChartRise() {
+    if (state.chartRiseTimer) {
+      clearTimeout(state.chartRiseTimer);
+      state.chartRiseTimer = 0;
     }
+    state.chartRiseUntil = 0;
+    state.chartRisePending = false;
+  }
+
+  function holdChart() {
+    clearChartRise();
+    ["chartEmpty", "totalChartEmpty"].forEach(function (id) {
+      var empty = document.getElementById(id);
+      if (empty) empty.hidden = true;
+    });
+    holdWrap("chartWrap");
+    holdWrap("totalChartWrap");
+    ["chart", "totalChart"].forEach(function (key) {
+      if (state[key] && state[key].destroy) {
+        state[key].destroy();
+        state[key] = null;
+      }
+    });
+  }
+
+  function releaseChartWrap(id) {
+    var wrap = document.getElementById(id);
+    if (!wrap) return;
+    wrap.classList.remove("is-pending");
+    wrap.removeAttribute("aria-busy");
   }
 
   function showChart(options) {
-    var wrap = document.getElementById("chartWrap");
     if (countsPending()) {
       holdChart();
       return;
     }
-    if (wrap) {
-      wrap.classList.remove("is-pending");
-      wrap.removeAttribute("aria-busy");
+    var forced = !!(options && (options.replay || options.rise));
+    if (!forced && state.chartRiseUntil && Date.now() < state.chartRiseUntil) {
+      state.chartRisePending = true;
+      return;
     }
-    renderChart(options);
+    var firstRise = !state.chart || !state.totalChart || forced;
+    releaseChartWrap("chartWrap");
+    releaseChartWrap("totalChartWrap");
+    renderChart({ metric: "today", replay: options && options.replay, rise: options && options.rise });
+    renderChart({ metric: "total", replay: options && options.replay, rise: options && options.rise });
+    if (!firstRise || reducedMotion) return;
+    state.chartRiseUntil = Date.now() + 1000;
+    if (state.chartRiseTimer) clearTimeout(state.chartRiseTimer);
+    state.chartRiseTimer = setTimeout(function () {
+      state.chartRiseTimer = 0;
+      state.chartRiseUntil = 0;
+      if (!state.chartRisePending) return;
+      state.chartRisePending = false;
+      showChart();
+    }, 1040);
   }
 
 
@@ -2353,7 +2497,14 @@
     }
   }
 
-  // 대시보드는 모든 블로그, 상세는 그 캐릭터의 블로그가 끝나야 숫자를 연다.
+  // 이 블로그 값만 본다. 다른 블로그가 아직이어도 저장해 둔 숫자는 그대로 둔다.
+  function blogCountLoading(key) {
+    if (!key) return false;
+    var data = state.blogCounts[key];
+    return !data || data.status === "loading";
+  }
+
+  // 헤더 합, 필터 수, 통계 그래프는 아직 값이 없는 블로그가 있으면 기다린다.
   function countsBlockPaint() {
     if (document.body.dataset.page === "detail") {
       var params = new URLSearchParams(location.search);
@@ -2889,11 +3040,15 @@
     if (state.loading) return;
     state.countRefreshGen += 1;
     state.blogCounts = {};
+    state.countRefreshBusy = false;
     state.countIconHold = true;
     state.loading = true;
     setLoading(true);
     syncCountReloadSpin();
-    if (state.ready) paintLivePlaceholders();
+    if (state.ready) {
+      seedCachedCounts();
+      paintLivePlaceholders();
+    }
     try {
       if (typeof CharacterParser === "undefined") throw new Error("parser.js를 불러오지 못했습니다.");
       await loadCharacters();
@@ -3148,6 +3303,7 @@
       if (typeof CharacterParser === "undefined") throw new Error("parser.js를 불러오지 못했습니다.");
       state.blogCounts = {};
       await loadCharacters();
+      seedCachedCounts();
       try { await warmThumbs(thumbKeysFor(state.characters)); } catch (error) {}
       renderNotice();
       var id = new URLSearchParams(location.search).get("id");

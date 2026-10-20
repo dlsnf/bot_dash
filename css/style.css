@@ -942,10 +942,6 @@ button, input, select { font: inherit; color: inherit; }
 .card.is-low .visitor-num { color: #b7c0f5; }
 .card.is-mid .visitor-num { color: #8b9bff; }
 .card.is-mid .meter > span { background: var(--accent); }
-.card.is-high {
-  border-color: rgba(245, 166, 35, 0.4);
-  box-shadow: inset 3px 0 0 var(--warn), var(--shadow);
-}
 .card.is-high .visitor-num { color: var(--warn); }
 .card.is-high .meter > span { background: var(--warn); }
 .card.is-zero { background: #14141f; color: var(--muted-strong); border-color: #3a3a4a; }

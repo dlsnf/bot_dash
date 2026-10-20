@@ -35,7 +35,7 @@
     })();
   </script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
-  <link rel="stylesheet" href="css/style.css?v=5">
+  <link rel="stylesheet" href="css/style.css?v=6">
 </head>
 <body data-page="dashboard" class="is-booting">
   <a class="skip" href="#cards">캐릭터 목록으로 건너뛰기</a>
@@ -171,6 +171,16 @@
           </div>
           <p id="chartEmpty" class="chart-empty" hidden></p>
         </div>
+        <div class="chart-card">
+          <div class="chart-head">
+            <h2 id="totalChartTitle">전체 방문자</h2>
+            <p>캐릭터별 블로그 전체 방문자를 더한 값입니다. 없는 값은 0으로 표시됩니다.</p>
+          </div>
+          <div class="chart-wrap" id="totalChartWrap">
+            <canvas id="totalChart" aria-hidden="true"></canvas>
+          </div>
+          <p id="totalChartEmpty" class="chart-empty" hidden></p>
+        </div>
         <div id="statsTable"></div>
       </section>
     </div>
@@ -194,8 +204,8 @@
   <script src="js/config.js"></script>
   <script src="js/parser.js"></script>
   <script src="js/reel.js"></script>
-  <script src="js/chart.js?v=5"></script>
+  <script src="js/chart.js?v=6"></script>
   <script src="js/login.js"></script>
-  <script src="js/app.js?v=5"></script>
+  <script src="js/app.js?v=7"></script>
 </body>
 </html>

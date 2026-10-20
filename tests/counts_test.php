@@ -1,6 +1,6 @@
 <?php
 /**
- * 최근 24시간 글 판정과 댓글 합산. 블로그에는 접속하지 않고 저장해 둔 조각만 본다.
+ * 한국시간 오늘 글 판정과 댓글 합산. 블로그에는 접속하지 않고 저장해 둔 조각만 본다.
  */
 require_once dirname(__DIR__) . "/profile_count.php";
 
@@ -17,16 +17,21 @@ function expect($label, $actual, $expected) {
 $morning = new DateTime("2026-10-16 10:00:00", new DateTimeZone("Asia/Seoul"));
 $nextMorning = new DateTime("2026-10-17 08:00:00", new DateTimeZone("Asia/Seoul"));
 $noonAfter = new DateTime("2026-10-17 12:00:00", new DateTimeZone("Asia/Seoul"));
-expect("22시간 전은 자정을 넘어도 센다", within_24h("22시간 전", $morning), true);
-expect("25시간 전은 뺀다", within_24h("25시간 전", $morning), false);
-expect("24시간 전은 포함한다", within_24h("24시간 전", $morning), true);
-expect("오늘 문구", within_24h("오늘", $morning), true);
-expect("어제 문구는 시각이 없어 뺀다", within_24h("어제", $morning), false);
+expect("22시간 전은 어제라 뺀다", on_seoul_today("22시간 전", $morning), false);
+expect("25시간 전은 뺀다", on_seoul_today("25시간 전", $morning), false);
+expect("24시간 전도 어제라 뺀다", on_seoul_today("24시간 전", $morning), false);
+expect("5시간 전은 오늘", on_seoul_today("5시간 전", $morning), true);
+expect("오늘 문구", on_seoul_today("오늘", $morning), true);
+expect("어제 문구는 뺀다", on_seoul_today("어제", $morning), false);
+expect("자정은 오늘", on_seoul_today("2026-10-16T00:00:00+09:00", $morning), true);
+expect("전날 23시 59분은 뺀다", on_seoul_today("2026-10-15T23:59:59+09:00", $morning), false);
 
 $rss = file_get_contents(__DIR__ . "/fixtures/rss-day.xml");
-expect("오전에는 전날 밤 글도 24시간 안", rss_posts_on_day($rss, $morning), 2);
-expect("다음 날 8시에는 전날 9시 글만", rss_posts_on_day($rss, $nextMorning), 1);
-expect("다음 날 정오에는 둘 다 지남", rss_posts_on_day($rss, $noonAfter), 0);
+$night = new DateTime("2026-10-16 23:40:00", new DateTimeZone("Asia/Seoul"));
+expect("오전에는 오늘 9시 글만 센다", rss_posts_on_day($rss, $morning), 1);
+expect("같은 날 밤 RSS도 오늘 글만", rss_posts_on_day($rss, $night), 1);
+expect("다음 날 8시에는 전날 글을 뺀다", rss_posts_on_day($rss, $nextMorning), 0);
+expect("다음 날 정오에는 전날 글을 뺀다", rss_posts_on_day($rss, $noonAfter), 0);
 expect("빈 RSS", rss_posts_on_day("", $morning), null);
 
 $list = '{"addDate":"2026. 10. 16."}{"addDate":"20261015"}';
@@ -34,9 +39,10 @@ expect("날짜만 있는 오늘은 센다", count_days($list, '/"addDate"\s*:\s*
 expect("날짜만 있는 어제는 뺀다", count_days($list, '/"addDate"\s*:\s*"([^"]+)"/', $nextMorning), 0);
 
 $timed = '{"regTime":"2026-10-16T23:30:00+09:00"}{"regTime":"2026-10-16T09:00:00+09:00"}';
-expect("시각이 있으면 저녁 글만 남긴다", count_days($timed, '/"regTime"\s*:\s*"([^"]+)"/', $noonAfter), 1);
+expect("다음 날이면 전날 시각 글을 뺀다", count_days($timed, '/"regTime"\s*:\s*"([^"]+)"/', $noonAfter), 0);
+expect("같은 날 밤에는 시각이 있는 글 둘", count_days($timed, '/"regTime"\s*:\s*"([^"]+)"/', $night), 2);
 $dotted = '{"commentDate":"2026. 10. 16. 23:30"}{"commentDate":"2026. 10. 16. 09:00"}';
-expect("점 날짜의 시각", count_days($dotted, '/"commentDate"\s*:\s*"([^"]+)"/', $noonAfter), 1);
+expect("점 날짜도 다음 날이면 뺀다", count_days($dotted, '/"commentDate"\s*:\s*"([^"]+)"/', $noonAfter), 0);
 
 $checked = new DateTime("2026-10-17 10:45:00", new DateTimeZone("Asia/Seoul"));
 $list = '{"logNo":"10","commentCount":"1","addDate":"12시간 전"}{"logNo":"11","addDate":"2026. 10. 15."}';
@@ -44,14 +50,17 @@ $rssTimes = '<item><guid>https://blog.naver.com/dlsnf8478/10</guid><pubDate>Fri,
 $times = naver_post_times($list, $rssTimes);
 expect("RSS 시각이 목록 문구를 덮는다", $times["10"], "Fri, 16 Oct 2026 22:10:00 +0900");
 expect("목록만 있는 글 시각", $times["11"], "2026. 10. 15.");
-expect("24시간 안 글의 댓글은 전부 센다", comments_on_fresh_post($times["10"], 1, $checked), 1);
+expect("어제 글의 댓글은 오늘이 아니다", comments_on_fresh_post($times["10"], 1, $checked), null);
+expect("오늘 글의 댓글은 전부 센다", comments_on_fresh_post("Sat, 17 Oct 2026 09:10:00 +0900", 1, $checked), 1);
 expect("지난 글의 댓글은 시각이 더 필요하다", comments_on_fresh_post($times["11"], 2, $checked), null);
 expect("댓글이 없으면 0", comments_on_fresh_post($times["11"], 0, $checked), 0);
 
 $oldComments = '{"data":{"items":[{"written":"2026. 10. 15. 11:11","children":[{"written":"2026. 10. 14. 23:23","children":[]}]}],"isLast":true,"nextId":0}}';
 expect("지난 티스토리 댓글은 0", tistory_comment_window($oldComments, $checked), array(0, true, null));
 $reply = '{"data":{"items":[{"written":"2026. 10. 10. 11:15","children":[{"written":"2026. 10. 16. 22:00","children":[]}]}],"isLast":false,"nextId":15}}';
-expect("답글만 24시간 안", tistory_comment_window($reply, $checked), array(1, false, "15"));
+expect("어제 답글은 오늘이 아니다", tistory_comment_window($reply, $checked), array(0, false, "15"));
+$todayReply = '{"data":{"items":[{"written":"2026. 10. 10. 11:15","children":[{"written":"2026. 10. 17. 09:00","children":[]}]}],"isLast":false,"nextId":15}}';
+expect("오늘 답글은 센다", tistory_comment_window($todayReply, $checked), array(1, false, "15"));
 expect("댓글 없음", tistory_comment_window('{"data":{"items":[],"isLast":true,"nextId":0}}', $checked), array(0, true, null));
 expect("댓글 본문이 아니면 비움", tistory_comment_window("{}", $checked), null);
 
@@ -112,9 +121,9 @@ expect("blogspot 뒤에 다른 도메인은 거절", blogspot_name("name.blogspo
 expect("www.blogspot.com 은 거절", blogspot_name("www.blogspot.com"), "");
 
 $bloggerNow = new DateTime("2026-10-19 15:07:07", new DateTimeZone("Asia/Seoul"));
-expect("24시간 전 시각", blogger_published_min($bloggerNow), "2026-10-18T15:07:07+09:00");
+expect("오늘 자정", blogger_published_min($bloggerNow), "2026-10-19T00:00:00+09:00");
 expect("글 피드 주소", blogger_feed_url("doda-in-korea", "posts", ""), "https://doda-in-korea.blogspot.com/feeds/posts/default?alt=json&max-results=0");
-expect("댓글 구간 주소", blogger_feed_url("doda-in-korea", "comments", "2026-10-18T15:07:07+09:00"), "https://doda-in-korea.blogspot.com/feeds/comments/default?alt=json&max-results=0&published-min=2026-10-18T15%3A07%3A07%2B09%3A00");
+expect("댓글 구간 주소", blogger_feed_url("doda-in-korea", "comments", "2026-10-19T00:00:00+09:00"), "https://doda-in-korea.blogspot.com/feeds/comments/default?alt=json&max-results=0&published-min=2026-10-19T00%3A00%3A00%2B09%3A00");
 
 $feed = '{"feed":{"openSearch$totalResults":{"$t":"2"},"author":[{"gd$image":{"src":"https://blogger.googleusercontent.com/img/b/photo/s1600/face.jpg"}}]}}';
 expect("피드 글 수", blogger_feed_total(200, $feed), 2);
@@ -149,6 +158,14 @@ expect("블로그 이름 목록", blogger_blog_names("https://nuri-seoul-shoppin
 $characterMd = "티스토리 https://dlsnf8478.tistory.com/ / Blogger(영어), https://nuri-seoul-shopping-bag.blogspot.com/ (blogID 1) / Blogger(일본어), https://nuri-seoul-okaimono.blogspot.com/";
 expect("캐릭터 파일의 Blogger 주소", blogger_character_blogs($characterMd), array("nuri-seoul-shopping-bag", "nuri-seoul-okaimono"));
 expect("Blogger가 아니면 비움", blogger_character_blogs("https://blog.naver.com/dlsnf8478"), array());
+expect("마감에 쓸 주소", blogger_close_urls_from($characterMd), array(
+    "https://nuri-seoul-okaimono.blogspot.com/",
+    "https://nuri-seoul-shopping-bag.blogspot.com/"
+));
+expect("국가 도메인도 적힌 그대로", blogger_close_urls_from("https://doda-in-korea.blogspot.co.kr/"), array("https://doda-in-korea.blogspot.co.kr/"));
+expect("끝의 마침표는 뺀다", blogger_close_urls_from("https://doda-in-korea.blogspot.com/."), array("https://doda-in-korea.blogspot.com/"));
+expect("같은 주소는 한 번", blogger_close_urls_from("https://doda-in-korea.blogspot.com/ https://doda-in-korea.blogspot.com"), array("https://doda-in-korea.blogspot.com/"));
+expect("http 주소는 마감에 넣지 않는다", blogger_close_urls_from("http://doda-in-korea.blogspot.com/"), array());
 $fromFile = blogger_apply_character_blogs(array(
     array("suffix" => "na_nuri", "blogs" => array()),
     array("suffix" => "kang_doyun", "blogs" => array("donuguri-spec-notes"))
@@ -179,16 +196,26 @@ $closes = array(
     "2026-10-06" => array($nuri => 1),
     "2026-10-19" => array($nuri => 73)
 );
+expect("로그 설정이 없으면 꺼진다", botdash_flag_on(""), false);
+expect("로그 0은 꺼진다", botdash_flag_on("0"), false);
+expect("로그 1은 켠다", botdash_flag_on("1"), true);
+expect("로그 on은 켠다", botdash_flag_on(" on "), true);
 expect("어제 마감과의 차이", blogger_today_count($closes, $nuri, 80, $closeNow), 7);
 expect("어제 기록이 없으면 비움", blogger_today_count(array(), $nuri, 80, $closeNow), null);
 expect("줄어든 전체는 비움", blogger_today_count($closes, $nuri, 70, $closeNow), null);
 expect("다른 블로그 마감은 쓰지 않는다", blogger_today_count($closes, "https://other.blogspot.com/", 80, $closeNow), null);
 expect("그저께 값으로는 오늘을 만들지 않는다", blogger_today_count(array("2026-10-18" => array($nuri => 10)), $nuri, 80, $closeNow), null);
+expect("어제 날짜가 없을 때의 이유", blogger_today_gap_reason(array(), $nuri, 80, $closeNow), "어제 날짜 없음. 한국오늘=2026-10-20 어제=2026-10-19 파일의 날짜=없음");
+expect("그저께만 있을 때의 이유", blogger_today_gap_reason(array("2026-10-18" => array($nuri => 10)), $nuri, 80, $closeNow), "어제 날짜 없음. 한국오늘=2026-10-20 어제=2026-10-19 파일의 날짜=2026-10-18");
+expect("어제 주소가 다를 때의 이유", blogger_today_gap_reason($closes, "https://other.blogspot.com/", 80, $closeNow), "어제 날짜에 이 주소 없음. 요청=https://other.blogspot.com/ 어제=2026-10-19 파일주소=" . $nuri);
+expect("전체가 더 작을 때의 이유", blogger_today_gap_reason($closes, $nuri, 70, $closeNow), "지금 전체 70, 어제 전체 73, 오늘을 만들지 않음");
 $stored = blogger_total_apply($closes, $nuri, "2026-10-20", 80, $closeNow);
 expect("오늘 전체에 기록", $stored["2026-10-20"][$nuri], 80);
 expect("어제 마감은 그대로", $stored["2026-10-19"][$nuri], 73);
 $stored = blogger_total_apply($stored, $nuri, "2026-10-20", 85, $closeNow);
-expect("같은 날 나중 값이 마감", $stored["2026-10-20"][$nuri], 85);
+expect("같은 날 더 큰 값이 마감", $stored["2026-10-20"][$nuri], 85);
+$stored = blogger_total_apply($stored, $nuri, "2026-10-20", 82, $closeNow);
+expect("같은 날 더 작은 값은 남기지 않는다", $stored["2026-10-20"][$nuri], 85);
 expect("14일 전 마감은 뺀다", isset($stored["2026-10-06"]), false);
 $untouchedTotal = blogger_total_apply($stored, $nuri, "2026-10-19", 1, $closeNow);
 expect("지난 날짜의 전체는 고치지 않는다", $untouchedTotal["2026-10-19"][$nuri], 73);

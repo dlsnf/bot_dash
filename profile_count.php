@@ -13,6 +13,12 @@ function seoul_clock($now = null) {
     return new DateTime("now", new DateTimeZone("Asia/Seoul"));
 }
 
+function botdash_flag_on($value) {
+    if (!is_string($value)) return false;
+    $value = strtolower(trim($value));
+    return $value === "1" || $value === "on" || $value === "true" || $value === "yes";
+}
+
 function clock_offset($seconds, $now = null) {
     $date = seoul_clock($now);
     $date->setTimestamp($date->getTimestamp() + (int) $seconds);
@@ -36,8 +42,7 @@ function zone_from_offset($offset) {
 
 /**
  * 글·댓글 시각. 시·분이 없으면 그 날짜의 서울 0시다.
- * 0시는 최근 24시간의 경계보다 이른 어제 날짜를 빼기 위한 자리다.
- * 서울의 오늘은 0시도 24시간 안이므로 날짜만 있어도 오늘 글은 센다.
+ * 날짜만 있으면 그 서울 날짜의 0시로 보고, 한국시간 오늘에 들어가는지로 센다.
  */
 function event_instant($raw, $now = null) {
     $text = trim(html_entity_decode((string) $raw, ENT_QUOTES, "UTF-8"));
@@ -98,11 +103,23 @@ function event_instant($raw, $now = null) {
     return $date;
 }
 
-function within_24h($raw, $now = null) {
+function seoul_day_start($now = null) {
+    $clock = seoul_clock($now);
+    $clock->setTime(0, 0, 0);
+    return $clock;
+}
+
+/**
+ * 한국시간 오늘 0시부터 다음 0시 전인지. 시각을 읽지 못하면 null.
+ */
+function on_seoul_today($raw, $now = null) {
     $instant = event_instant($raw, $now);
     if (!$instant) return null;
-    $cutoff = seoul_clock($now)->getTimestamp() - 86400;
-    return $instant->getTimestamp() >= $cutoff;
+    $start = seoul_day_start($now);
+    $end = clone $start;
+    $end->modify("+1 day");
+    $ts = $instant->getTimestamp();
+    return $ts >= $start->getTimestamp() && $ts < $end->getTimestamp();
 }
 
 function count_days($text, $pattern, $now = null) {
@@ -110,7 +127,7 @@ function count_days($text, $pattern, $now = null) {
     $count = 0;
     $known = false;
     foreach ($matched[1] as $raw) {
-        $inside = within_24h($raw, $now);
+        $inside = on_seoul_today($raw, $now);
         if ($inside === null) continue;
         $known = true;
         if ($inside) $count += 1;
@@ -119,13 +136,13 @@ function count_days($text, $pattern, $now = null) {
 }
 
 /**
- * 글이 최근 24시간 안이면 그 글의 댓글도 전부 그 안이다.
- * 글이 그보다 오래됐거나 시각이 없으면 null. 댓글 시각을 따로 봐야 한다.
+ * 글이 한국시간 오늘이면 그 글의 댓글도 전부 오늘이다.
+ * 글이 어제 이전이거나 시각이 없으면 null. 댓글 시각을 따로 봐야 한다.
  */
 function comments_on_fresh_post($postRaw, $commentCount, $now = null) {
     if (!is_int($commentCount) || $commentCount < 0) return null;
     if ($commentCount === 0) return 0;
-    if (within_24h($postRaw, $now) !== true) return null;
+    if (on_seoul_today($postRaw, $now) !== true) return null;
     return $commentCount;
 }
 
@@ -157,7 +174,7 @@ function tistory_walk_comments($items, $now, &$nodes, &$today, &$todayKnown) {
         if (!isset($item["written"]) || !is_string($item["written"])) {
             $todayKnown = false;
         } else {
-            $inside = within_24h($item["written"], $now);
+            $inside = on_seoul_today($item["written"], $now);
             if ($inside === null) $todayKnown = false;
             elseif ($inside) $today += 1;
         }
@@ -243,7 +260,7 @@ function naver_comment_take($items, &$seen, &$listed, &$today, &$todayKnown, $no
         if ($fresh && empty($item["deleted"]) && empty($item["blind"]) && empty($item["hiddenByCleanbot"])) {
             $listed += 1;
             $raw = isset($item["regTime"]) && is_string($item["regTime"]) ? $item["regTime"] : "";
-            $inside = within_24h($raw, $now);
+            $inside = on_seoul_today($raw, $now);
             if ($inside === null) $todayKnown = false;
             elseif ($inside) $today += 1;
         }
@@ -285,7 +302,7 @@ function naver_comment_census($body, $now = null) {
 
 /**
  * 글 페이지의 댓글 수가 주인 댓글을 빼면, 목록을 끝까지 봤을 때의 개수가 더 크다.
- * 그 더 큰 수를 쓰고, 24시간 개수도 주인 댓글을 넣어 센다.
+ * 그 더 큰 수를 쓰고, 오늘 개수도 주인 댓글을 넣어 센다.
  * 목록이 끝나지 않았으면 네이버가 알려 준 합계만 믿고 오늘 수는 비운다.
  */
 function naver_comment_sum($pages, $done) {
@@ -318,7 +335,7 @@ function rss_posts_on_day($xml, $now = null) {
     $known = false;
     foreach ($items[1] as $item) {
         if (!preg_match('#<pubDate>\s*([^<]+)\s*</pubDate>#i', $item, $matched)) continue;
-        $inside = within_24h($matched[1], $now);
+        $inside = on_seoul_today($matched[1], $now);
         if ($inside === null) continue;
         $known = true;
         if ($inside) $count += 1;
@@ -369,9 +386,7 @@ function blogspot_name($host) {
 }
 
 function blogger_published_min($now = null) {
-    $cutoff = seoul_clock($now);
-    $cutoff->modify("-24 hours");
-    return $cutoff->format("Y-m-d\\TH:i:sP");
+    return seoul_day_start($now)->format("Y-m-d\\TH:i:sP");
 }
 
 function blogger_feed_url($name, $kind, $min) {
@@ -472,9 +487,10 @@ function blogger_stats_total($status, $body) {
 }
 
 /**
- * 그 서울 날짜의 마지막 전체 페이지뷰를 남긴다.
- * 지난 날짜는 고치지 않고, 오늘로부터 13일보다 오래된 칸은 뺀다.
- * 대시보드가 조회할 때만 갱신되므로, 그날의 마지막 조회가 마감 값이다.
+ * 그 서울 날짜의 전체 페이지뷰를 남긴다.
+ * 지난 날짜는 고치지 않고, 같은 날에는 더 큰 값만 남긴다.
+ * 오늘로부터 13일보다 오래된 칸은 뺀다.
+ * 대시보드 집계와 blogger_close.php 가 이 값을 갱신한다.
  */
 function blogger_total_apply($data, $blog, $day, $total, $now = null) {
     if (!is_array($data)) $data = array();
@@ -483,6 +499,9 @@ function blogger_total_apply($data, $blog, $day, $total, $now = null) {
     $clock = seoul_clock($now);
     if ($day !== $clock->format("Y-m-d")) return $data;
     if (!isset($data[$day]) || !is_array($data[$day])) $data[$day] = array();
+    $previous = isset($data[$day][$blog]) ? $data[$day][$blog] : null;
+    if (is_string($previous) && preg_match('/^\d{1,12}$/', $previous)) $previous = (int) $previous;
+    if (is_int($previous) && $previous > $total) $total = $previous;
     $data[$day][$blog] = $total;
     $cutoff = clone $clock;
     $cutoff->modify("-13 days");
@@ -517,6 +536,42 @@ function blogger_today_count($data, $blog, $total, $now = null) {
     if (is_string($base) && preg_match('/^\d{1,12}$/', $base)) $base = (int) $base;
     if (!is_int($base) || $base < 0 || $total < $base) return null;
     return $total - $base;
+}
+
+/**
+ * 오늘 숫자가 비는 이유. 화면은 이 경우를 0으로 그린다.
+ */
+function blogger_today_gap_reason($data, $blog, $total, $now = null) {
+    if (!is_array($data)) return "기록 파일이 비어 있음";
+    if (!is_string($blog) || $blog === "") return "블로그 주소가 없음";
+    if (!is_int($total) || $total < 0) return "전체가 없음";
+    $todayKey = seoul_clock($now)->format("Y-m-d");
+    $yesterday = seoul_clock($now);
+    $yesterday->modify("-1 day");
+    $key = $yesterday->format("Y-m-d");
+    $days = array();
+    foreach ($data as $day => $row) {
+        if (is_string($day) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $day)) $days[] = $day;
+    }
+    sort($days, SORT_STRING);
+    $dayList = $days ? implode(",", $days) : "없음";
+    if (!isset($data[$key]) || !is_array($data[$key])) {
+        return "어제 날짜 없음. 한국오늘=" . $todayKey . " 어제=" . $key . " 파일의 날짜=" . $dayList;
+    }
+    if (!array_key_exists($blog, $data[$key])) {
+        $urls = array();
+        foreach ($data[$key] as $url => $value) {
+            if (is_string($url) && $url !== "") $urls[] = $url;
+        }
+        sort($urls, SORT_STRING);
+        $urlList = $urls ? implode(",", $urls) : "없음";
+        return "어제 날짜에 이 주소 없음. 요청=" . $blog . " 어제=" . $key . " 파일주소=" . $urlList;
+    }
+    $base = $data[$key][$blog];
+    if (is_string($base) && preg_match('/^\d{1,12}$/', $base)) $base = (int) $base;
+    if (!is_int($base) || $base < 0) return "어제 값이 숫자가 아님";
+    if ($total < $base) return "지금 전체 " . $total . ", 어제 전체 " . $base . ", 오늘을 만들지 않음";
+    return "알 수 없음";
 }
 
 function blogger_api_pageviews($status, $body) {
@@ -569,6 +624,38 @@ function blogger_character_blogs($markdown) {
         if ($name !== "") $names[$name] = true;
     }
     return array_keys($names);
+}
+
+/**
+ * 대시보드가 집계 주소로 쓰는 블로거 주소. 루트는 슬래시로 끝난다.
+ */
+function blogger_close_url($raw) {
+    $raw = rtrim(trim((string) $raw), "),.]");
+    $parts = parse_url($raw);
+    if (!is_array($parts)) return "";
+    if (empty($parts["scheme"]) || strtolower($parts["scheme"]) !== "https") return "";
+    if (!empty($parts["user"]) || !empty($parts["pass"])) return "";
+    if (isset($parts["port"]) && (int) $parts["port"] !== 443) return "";
+    $host = strtolower(isset($parts["host"]) ? $parts["host"] : "");
+    if (blogspot_name($host) === "") return "";
+    $path = isset($parts["path"]) && $parts["path"] !== "" ? $parts["path"] : "/";
+    if (strlen($path) > 1) $path = rtrim($path, "/");
+    if ($path === "") $path = "/";
+    $query = isset($parts["query"]) && $parts["query"] !== "" ? "?" . $parts["query"] : "";
+    return "https://" . $host . $path . $query;
+}
+
+function blogger_close_urls_from($markdown) {
+    $urls = array();
+    if (!is_string($markdown) || $markdown === "") return array();
+    if (!preg_match_all('#https?://[^\s<>"\']+#i', $markdown, $matches)) return array();
+    foreach ($matches[0] as $raw) {
+        $url = blogger_close_url($raw);
+        if ($url !== "") $urls[$url] = true;
+    }
+    $keys = array_keys($urls);
+    sort($keys, SORT_STRING);
+    return $keys;
 }
 
 function blogger_apply_character_blogs($sets, $bySuffix) {
