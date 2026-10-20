@@ -5,7 +5,7 @@
  * 사진이 없거나 기본 이미지면 404. 화면은 그때 기본 캐릭터 이미지를 쓴다.
  * view=counts 는 {"posts","comments","today","total","postsToday","commentsToday"} 를 돌려준다.
  * 값은 정수이거나 null이다. postsToday, commentsToday 는 최근 24시간 동안 올라온 개수다.
- * null 인 칸은 gaps 에 이유를 붙인다. 오늘 방문자는 data/history.json 에 날짜마다 하나 남긴다.
+ * null 인 칸은 gaps 에 이유를 붙인다.
  * Blogger 전체 페이지뷰는 계정 토큰이 있으면 API를, 없으면 공개 카운터를 쓴다.
  * 오늘 페이지뷰는 data/blogger_totals.json 의 어제 마감 전체를 지금 전체에서 뺀 값이다.
  * 어제 마감이 없으면 today 는 null 이고 gaps.today 는 alltime 이다.
@@ -414,35 +414,6 @@ function clean_gaps($gaps) {
     return $out;
 }
 
-function record_blog_today($blog, $today) {
-    if (blog_kind($blog) === "") return;
-    $today = count_or_null($today);
-    if (!is_int($today)) return;
-    $path = __DIR__ . "/data/history.json";
-    $dir = dirname($path);
-    if (!is_dir($dir) || !is_writable($dir)) return;
-    $fh = @fopen($path, "c+");
-    if (!$fh) return;
-    if (!flock($fh, LOCK_EX)) {
-        fclose($fh);
-        return;
-    }
-    $raw = stream_get_contents($fh);
-    $data = json_decode(is_string($raw) ? $raw : "", true);
-    $next = history_apply(is_array($data) ? $data : array(), $blog, seoul_clock()->format("Y-m-d"), $today);
-    $json = json_encode($next, JSON_UNESCAPED_SLASHES);
-    if (is_string($json)) {
-        rewind($fh);
-        if (ftruncate($fh, 0)) {
-            fwrite($fh, $json);
-            fflush($fh);
-        }
-    }
-    flock($fh, LOCK_UN);
-    fclose($fh);
-    @chmod($path, 0600);
-}
-
 function send_counts($posts, $comments, $today = null, $total = null, $postsToday = null, $commentsToday = null, $cacheBlog = "", $gaps = array()) {
     $posts = count_or_null($posts);
     $comments = count_or_null($comments);
@@ -468,7 +439,6 @@ function send_counts($posts, $comments, $today = null, $total = null, $postsToda
     if (!is_string($json) || $json === "") $json = "{}";
     if ($cacheBlog !== "" && $json !== "{}") {
         write_cache("counts24", $cacheBlog, false, "application/json; charset=utf-8", $json, 600);
-        record_blog_today($cacheBlog, $today);
     }
     send_body("application/json; charset=utf-8", $json, 600);
 }
@@ -1370,12 +1340,8 @@ if (isset($_GET["view"]) && (string) $_GET["view"] === "counts") {
         if ($kind === "blogger" && is_array($cachedData)) {
             $cachedData = blogger_cached_counts($blog, $cachedData);
             $body = json_encode($cachedData);
-            if (is_string($body)) {
-                record_blog_today($blog, array_key_exists("today", $cachedData) ? $cachedData["today"] : null);
-                send_body($cached[0], $body, 600);
-            }
+            if (is_string($body)) send_body($cached[0], $body, 600);
         }
-        if (is_array($cachedData) && array_key_exists("today", $cachedData)) record_blog_today($blog, $cachedData["today"]);
         send_body($cached[0], $cached[1], 600);
     }
     if ($kind === "naver") {

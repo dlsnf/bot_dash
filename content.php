@@ -1,7 +1,7 @@
 <?php
 /**
  * 로그인한 브라우저만 캐릭터 마크다운과 stats.json 을 읽게 한다.
- * 주소의 f 는 characters/이름.md, data/stats.json, data/history.json 만 허용한다.
+ * 주소의 f 는 characters/이름.md, data/stats.json 만 허용한다.
  * list=characters 는 characters 폴더의 .md 파일명만 돌려준다.
  */
 function botdash_character_files($dir) {
@@ -41,7 +41,7 @@ if (isset($_GET["list"]) && (string) $_GET["list"] === "characters") {
     exit;
 }
 $rel = isset($_GET["f"]) ? (string) $_GET["f"] : "";
-if ($rel === "data/stats.json" || $rel === "data/history.json") {
+if ($rel === "data/stats.json") {
     $path = __DIR__ . "/" . $rel;
     $type = "application/json; charset=utf-8";
 } elseif (preg_match('/^characters\/[A-Za-z0-9_-]+\.md$/', $rel)) {

@@ -417,7 +417,6 @@ button, input, select { font: inherit; color: inherit; }
 .chart-head h2 { margin: 0; font-size: 20px; }
 .chart-head p { margin: 0; color: var(--muted); font-size: 13px; max-width: 520px; line-height: 1.45; word-break: keep-all; }
 .chart-wrap { position: relative; height: 280px; margin-top: 8px; }
-.week-wrap { height: 320px; }
 .chart-wrap.is-pending canvas,
 .chart-wrap.is-pending .chart-values { visibility: hidden; }
 .chart-wrap.is-pending::after {
@@ -466,17 +465,9 @@ button, input, select { font: inherit; color: inherit; }
   font-weight: 700;
 }
 .count-gap { color: var(--muted); font-size: 12px; font-weight: 700; }
-.visitor-blogs .spark,
 .visitor-blogs .visitor-partial,
 .visitor-blogs .visitor-today { grid-column: 1 / -1; }
-.spark { display: flex; align-items: center; min-height: 28px; }
-.spark svg { display: block; width: 84px; height: 28px; }
-.spark polyline { fill: none; stroke: #8b9bff; stroke-width: 1.6; stroke-linejoin: round; stroke-linecap: round; }
-.spark circle { fill: #8b9bff; }
-.spark-empty { color: var(--muted); font-size: 12px; font-weight: 700; }
 .visitor-partial { margin: 0; color: var(--warn); font-size: 12px; font-weight: 700; }
-.stats-table .spark { margin-top: 6px; }
-.stats-table .spark svg { width: 72px; max-width: 100%; height: 24px; }
 .stats-platform { color: var(--muted-strong); font-size: 14px; font-weight: 700; }
 
 .card {

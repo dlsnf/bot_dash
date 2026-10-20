@@ -472,37 +472,6 @@ function blogger_stats_total($status, $body) {
 }
 
 /**
- * 블로그 하나의 오늘 방문자를 서울 날짜 칸에 넣는다.
- * 지난 날짜는 고치지 않고, 오늘로부터 13일보다 오래된 칸은 뺀다.
- */
-function history_apply($data, $blog, $day, $today, $now = null) {
-    if (!is_array($data)) $data = array();
-    if (!is_string($blog) || $blog === "" || !is_int($today) || $today < 0) return $data;
-    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $day)) return $data;
-    $clock = seoul_clock($now);
-    if ($day !== $clock->format("Y-m-d")) return $data;
-    if (!isset($data[$day]) || !is_array($data[$day])) $data[$day] = array();
-    $data[$day][$blog] = $today;
-    $cutoff = clone $clock;
-    $cutoff->modify("-13 days");
-    $cutoffKey = $cutoff->format("Y-m-d");
-    $kept = array();
-    foreach ($data as $key => $row) {
-        if (!is_string($key) || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $key) || $key < $cutoffKey) continue;
-        if (!is_array($row)) continue;
-        $clean = array();
-        foreach ($row as $url => $value) {
-            if (!is_string($url) || $url === "") continue;
-            if (is_int($value) && $value >= 0) $clean[$url] = $value;
-            elseif (is_string($value) && preg_match('/^\d{1,12}$/', $value)) $clean[$url] = (int) $value;
-        }
-        if ($clean) $kept[$key] = $clean;
-    }
-    ksort($kept);
-    return $kept;
-}
-
-/**
  * 그 서울 날짜의 마지막 전체 페이지뷰를 남긴다.
  * 지난 날짜는 고치지 않고, 오늘로부터 13일보다 오래된 칸은 뺀다.
  * 대시보드가 조회할 때만 갱신되므로, 그날의 마지막 조회가 마감 값이다.

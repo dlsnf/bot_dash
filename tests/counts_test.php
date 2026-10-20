@@ -104,23 +104,6 @@ expect("2페이지는 중복을 빼고 하나", $added2, 1);
 expect("빈 칸은 0으로 합산", tistory_comment_total($counts, 3), 5);
 expect("글 수보다 적으면 합을 비움", tistory_comment_total($counts, 4), null);
 
-$historyNow = new DateTime("2026-10-18 15:00:00", new DateTimeZone("Asia/Seoul"));
-$history = array(
-    "2026-10-04" => array("https://blog.naver.com/a" => 1),
-    "2026-10-05" => array("https://blog.naver.com/a" => 2),
-    "2026-10-18" => array("https://blog.naver.com/a" => 3)
-);
-$history = history_apply($history, "https://blog.naver.com/a", "2026-10-18", 9, $historyNow);
-expect("오늘 방문자만 덮어쓴다", $history["2026-10-18"]["https://blog.naver.com/a"], 9);
-expect("13일 전 기록은 남긴다", $history["2026-10-05"]["https://blog.naver.com/a"], 2);
-expect("14일 전 기록은 뺀다", isset($history["2026-10-04"]), false);
-$history = history_apply($history, "https://blog.naver.com/b", "2026-10-18", 4, $historyNow);
-expect("같은 날의 다른 블로그", $history["2026-10-18"]["https://blog.naver.com/b"], 4);
-$untouched = history_apply($history, "https://blog.naver.com/a", "2026-10-17", 8, $historyNow);
-expect("지난 날짜는 고치지 않는다", isset($untouched["2026-10-17"]), false);
-$rejected = history_apply($history, "https://blog.naver.com/a", "2026-10-18", -1, $historyNow);
-expect("음수 방문자는 거절", $rejected["2026-10-18"]["https://blog.naver.com/a"], 9);
-
 expect("blogspot.com 이름", blogspot_name("doda-in-korea.blogspot.com"), "doda-in-korea");
 expect("blogspot.co.kr 이름", blogspot_name("doda-in-korea.blogspot.co.kr"), "doda-in-korea");
 expect("blogspot.com.au 이름", blogspot_name("doda-in-korea.blogspot.com.au"), "doda-in-korea");

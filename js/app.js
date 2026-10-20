@@ -78,9 +78,7 @@
     cardColumns: 0,
     cardMoving: false,
     cardMoveGen: 0,
-    countsShown: false,
-    history: {},
-    weekChart: null
+    countsShown: false
   };
 
   if (!window.BotDashReel || !window.BotDashChart || !window.BotDashLogin) {
@@ -103,9 +101,7 @@
     formatNumber: formatNumber,
     paintStatic: paintStatic,
     setOdometer: setOdometer,
-    reducedMotion: reducedMotion,
-    weekSeries: weekSeries,
-    weekLabels: weekLabels
+    reducedMotion: reducedMotion
   });
   var loginApi = window.BotDashLogin.create({
     state: state,
@@ -189,7 +185,6 @@
     var statsDoc = null;
     if (location.protocol === "file:") {
       state.characters = [];
-      state.history = {};
       state.statsUpdatedAt = null;
       state.loadedAt = new Date();
       state.notices = ["파일을 직접 열면 마크다운을 읽지 못합니다. 웹서버로 열어 주세요."];
@@ -211,13 +206,6 @@
       };
     } catch (error) {
       notices.push("stats.json을 읽지 못했습니다. 마크다운 안의 통계만 사용합니다.");
-    }
-    state.history = {};
-    try {
-      var historyText = await fetchText("content.php?f=" + encodeURIComponent("data/history.json") + "&t=" + stamp);
-      state.history = readHistory(JSON.parse(historyText));
-    } catch (error) {
-      state.history = {};
     }
 
     var rows = await Promise.all(files.map(async function (file) {
@@ -1240,180 +1228,6 @@
     showReel(plus.querySelector(".odometer"), today, host);
   }
 
-  function readHistory(parsed) {
-    var out = {};
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return out;
-    Object.keys(parsed).forEach(function (day) {
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return;
-      var row = parsed[day];
-      if (!row || typeof row !== "object" || Array.isArray(row)) return;
-      var clean = {};
-      Object.keys(row).forEach(function (blog) {
-        var value = normalizeCount(row[blog]);
-        if (!blog || value == null) return;
-        clean[blog] = value;
-      });
-      if (Object.keys(clean).length) out[day] = clean;
-    });
-    return out;
-  }
-
-  function rememberHistory(key, today) {
-    if (!key || today == null) return;
-    var day = seoulDayKey(0);
-    var row = state.history[day];
-    if (!row || typeof row !== "object" || Array.isArray(row)) {
-      row = {};
-      state.history[day] = row;
-    }
-    row[key] = today;
-  }
-
-  function seoulDayKey(offset) {
-    var parts = new Intl.DateTimeFormat("en-CA", {
-      timeZone: "Asia/Seoul",
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit"
-    }).formatToParts(new Date());
-    var map = {};
-    parts.forEach(function (part) { map[part.type] = part.value; });
-    var utc = new Date(Date.UTC(Number(map.year), Number(map.month) - 1, Number(map.day)));
-    if (offset) utc.setUTCDate(utc.getUTCDate() - offset);
-    var month = utc.getUTCMonth() + 1;
-    var date = utc.getUTCDate();
-    return utc.getUTCFullYear() + "-" + (month < 10 ? "0" : "") + month + "-" + (date < 10 ? "0" : "") + date;
-  }
-
-  function weekKeys() {
-    var keys = [];
-    for (var i = 6; i >= 0; i--) keys.push(seoulDayKey(i));
-    return keys;
-  }
-
-  function weekLabels() {
-    return weekKeys().map(function (key) { return key.slice(5).replace("-", "/"); });
-  }
-
-  function storedToday(blogKey, dayKey) {
-    var row = state.history && state.history[dayKey];
-    if (!row || typeof row !== "object") return null;
-    return normalizeCount(row[blogKey]);
-  }
-
-  function blogDayVisitors(blogKey, dayKey) {
-    if (dayKey === seoulDayKey(0)) {
-      var data = state.blogCounts[blogKey];
-      if (data && data.status === "ok") return normalizeCount(data.today);
-      if (data && data.status === "fail") return null;
-    }
-    return storedToday(blogKey, dayKey);
-  }
-
-  function blogHost(url) {
-    try { return new URL(url).hostname.toLowerCase(); } catch (error) { return ""; }
-  }
-
-  function characterWeek(character) {
-    var keys = weekKeys();
-    var blogs = countableBlogs(character);
-    var todayKey = seoulDayKey(0);
-    if (!blogs.length) return keys.map(function () { return null; });
-    return keys.map(function (day) {
-      var sum = 0;
-      var counted = 0;
-      for (var i = 0; i < blogs.length; i++) {
-        var key = countableBlogUrl(blogs[i].url);
-        if (omitsDailyVisitors(state.blogCounts[key])) continue;
-        var value = blogDayVisitors(key, day);
-        // 마감 기록이 생기기 전의 Blogger 날은 다른 블로그 합을 지우지 않는다.
-        if (value == null && day !== todayKey && blogspotName(blogHost(key)) !== "") continue;
-        if (value == null) return null;
-        counted += 1;
-        sum += value;
-      }
-      return counted ? sum : null;
-    });
-  }
-
-  function weekSeries(character) {
-    return characterWeek(character);
-  }
-
-  function sparkLabel(keys, series) {
-    var parts = ["최근 7일 오늘 방문자"];
-    keys.forEach(function (key, index) {
-      var day = Number(key.slice(5, 7)) + "월 " + Number(key.slice(8)) + "일";
-      parts.push(day + " " + (series[index] == null ? "기록 없음" : formatNumber(series[index]) + "명"));
-    });
-    return parts.join(", ");
-  }
-
-  function sparkSvg(series) {
-    var known = false;
-    series.forEach(function (value) { if (typeof value === "number") known = true; });
-    if (!known) return null;
-    var min = null;
-    var max = null;
-    series.forEach(function (value) {
-      if (typeof value !== "number") return;
-      if (min == null || value < min) min = value;
-      if (max == null || value > max) max = value;
-    });
-    if (min === max) {
-      min -= 1;
-      max += 1;
-    }
-    var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    svg.setAttribute("viewBox", "0 0 84 28");
-    svg.setAttribute("aria-hidden", "true");
-    function xOf(index) { return 3 + (index * 78) / 6; }
-    function yOf(value) { return 3 + ((max - value) * 22) / (max - min); }
-    var run = [];
-    function flush() {
-      if (run.length > 1) {
-        var line = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
-        line.setAttribute("points", run.map(function (point) {
-          return xOf(point.index) + "," + yOf(point.value);
-        }).join(" "));
-        svg.appendChild(line);
-      }
-      run.forEach(function (point) {
-        var dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-        dot.setAttribute("cx", String(xOf(point.index)));
-        dot.setAttribute("cy", String(yOf(point.value)));
-        dot.setAttribute("r", "2");
-        svg.appendChild(dot);
-      });
-      run = [];
-    }
-    series.forEach(function (value, index) {
-      if (typeof value !== "number") flush();
-      else run.push({ index: index, value: value });
-    });
-    flush();
-    return svg;
-  }
-
-  function paintSpark(el, character) {
-    if (!el) return;
-    var keys = weekKeys();
-    var series = character && character.ok ? characterWeek(character) : keys.map(function () { return null; });
-    el.setAttribute("aria-label", sparkLabel(keys, series));
-    var svg = sparkSvg(series);
-    if (!svg) {
-      el.replaceChildren(h("span", { class: "spark-empty", text: "기록 없음" }));
-      return;
-    }
-    el.replaceChildren(svg);
-  }
-
-  function sparkHost(character) {
-    var el = h("div", { class: "spark", "data-spark": character.id });
-    paintSpark(el, character);
-    return el;
-  }
-
   function paintPartial(el, character) {
     if (!el) return;
     var show = !!(character && character.ok && !characterLivePending(character) && character.visitorPartial);
@@ -1603,7 +1417,6 @@
       commentsToday: normalizeCount(data && data.commentsToday),
       gaps: data && data.gaps ? normalizeGaps(data) : null
     };
-    rememberHistory(key, state.blogCounts[key].today);
   }
 
   // 이미 보이는 숫자에서 새 숫자로 올린다. 집계 중으로 바꾸면 릴이 지워져 0부터 다시 센다.
@@ -1909,7 +1722,6 @@
       applyVisitorBlog(block, key);
       wrap.appendChild(block);
     });
-    wrap.appendChild(sparkHost(character));
     wrap.appendChild(partialHost(character));
     return wrap;
   }
@@ -2347,7 +2159,7 @@
       return;
     }
     var table = h("table", { class: "stats-table" });
-    table.appendChild(h("caption", { class: "sr-only", text: "캐릭터별 블로그 방문자, 글, 댓글, 최근 7일" }));
+    table.appendChild(h("caption", { class: "sr-only", text: "캐릭터별 블로그 방문자, 글, 댓글" }));
     table.appendChild(h("thead", null, h("tr", null,
       h("th", { text: "캐릭터" }),
       h("th", { text: "블로그" }),
@@ -2361,7 +2173,6 @@
       var blogs = character.ok ? labeledBlogs(character, true) : [];
       var span = Math.max(1, blogs.length);
       var nameCell = h("th", { scope: "row" }, character.ok ? character.name : "파싱 오류");
-      if (character.ok) nameCell.appendChild(sparkHost(character));
       if (span > 1) nameCell.rowSpan = span;
       if (!blogs.length) {
         body.appendChild(h("tr", null, nameCell, h("td", { text: "없음" }), h("td", { class: "num", text: "—" }), h("td", { class: "num", text: "—" }), h("td", { class: "num", text: "—" }), h("td", { class: "num", text: "—" })));
@@ -2391,10 +2202,6 @@
     window.BotDashChart.render(options);
   }
 
-  function renderWeek() {
-    window.BotDashChart.renderWeek();
-  }
-
   function holdWrap(id) {
     var wrap = document.getElementById(id);
     if (!wrap) return;
@@ -2406,23 +2213,15 @@
   function holdChart() {
     var empty = document.getElementById("chartEmpty");
     if (empty) empty.hidden = true;
-    var weekEmpty = document.getElementById("weekEmpty");
-    if (weekEmpty) weekEmpty.hidden = true;
     holdWrap("chartWrap");
-    holdWrap("weekWrap");
     if (state.chart && state.chart.destroy) {
       state.chart.destroy();
       state.chart = null;
-    }
-    if (state.weekChart && state.weekChart.destroy) {
-      state.weekChart.destroy();
-      state.weekChart = null;
     }
   }
 
   function showChart(options) {
     var wrap = document.getElementById("chartWrap");
-    var week = document.getElementById("weekWrap");
     if (countsPending()) {
       holdChart();
       return;
@@ -2431,12 +2230,7 @@
       wrap.classList.remove("is-pending");
       wrap.removeAttribute("aria-busy");
     }
-    if (week) {
-      week.classList.remove("is-pending");
-      week.removeAttribute("aria-busy");
-    }
     renderChart(options);
-    renderWeek();
   }
 
 
@@ -2518,9 +2312,6 @@
     document.querySelectorAll("[data-delta]").forEach(function (node) {
       var character = findById(node.getAttribute("data-delta"));
       if (character) paintDelta(node, character);
-    });
-    document.querySelectorAll("[data-spark]").forEach(function (el) {
-      paintSpark(el, findById(el.getAttribute("data-spark")));
     });
     document.querySelectorAll("[data-partial]").forEach(function (el) {
       paintPartial(el, findById(el.getAttribute("data-partial")));
@@ -2734,7 +2525,7 @@
       else setHostedOdometer(dd, pair[1]);
       grid.appendChild(h("div", null, h("dt", { text: pair[0] }), dd));
     });
-    var nodes = [grid, sparkHost(character), partialHost(character), deltaNode(character), h("h3", { text: "소개" }), h("p", { class: "intro", text: character.intro || "소개가 없습니다." })];
+    var nodes = [grid, partialHost(character), deltaNode(character), h("h3", { text: "소개" }), h("p", { class: "intro", text: character.intro || "소개가 없습니다." })];
     nodes.forEach(function (node) { if (node) panel.appendChild(node); });
     var meta = h("dl", { class: "meta-list" });
     var birthText = formatBirth(character.birthdate);

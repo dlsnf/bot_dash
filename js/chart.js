@@ -179,103 +179,12 @@
     }
   }
 
-  var WEEK_COLORS = ["#5266eb", "#f5a623", "#34d399", "#f472b6", "#38bdf8", "#a78bfa", "#fb7185", "#fbbf24", "#2dd4bf", "#94a3b8"];
-
-  function renderWeek() {
-    var wrap = document.getElementById("weekWrap");
-    var empty = document.getElementById("weekEmpty");
-    var canvas = document.getElementById("weekChart");
-    if (!wrap || !canvas) return;
-    if (deps.state.weekChart) {
-      deps.state.weekChart.destroy();
-      deps.state.weekChart = null;
-    }
-    var labels = deps.weekLabels();
-    var rows = deps.visibleCharacters().filter(function (row) {
-      if (!row.ok) return false;
-      return deps.weekSeries(row).some(function (value) { return typeof value === "number"; });
-    });
-    if (!rows.length || typeof Chart === "undefined") {
-      wrap.hidden = true;
-      if (empty) {
-        empty.hidden = false;
-        empty.textContent = typeof Chart === "undefined"
-          ? "Chart.js를 불러오지 못했습니다."
-          : "기록이 없습니다. 집계가 쌓이면 최근 7일이 이어집니다.";
-      }
-      return;
-    }
-    wrap.hidden = false;
-    if (empty) empty.hidden = true;
-    try {
-      deps.state.weekChart = new Chart(canvas, {
-        type: "line",
-        data: {
-          labels: labels,
-          datasets: rows.map(function (row, index) {
-            var color = WEEK_COLORS[index % WEEK_COLORS.length];
-            return {
-              label: row.name,
-              data: deps.weekSeries(row),
-              borderColor: color,
-              backgroundColor: color,
-              spanGaps: false,
-              tension: 0.25,
-              borderWidth: 2,
-              pointRadius: 3,
-              pointHoverRadius: 4
-            };
-          })
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          animation: { duration: deps.reducedMotion ? 0 : 600 },
-          plugins: {
-            legend: {
-              display: rows.length > 1,
-              position: "bottom",
-              labels: { color: "#c3c3cc", boxWidth: 10, font: { size: 11 } }
-            },
-            tooltip: {
-              backgroundColor: "#11111d",
-              titleColor: "#ededf3",
-              bodyColor: "#c3c3cc",
-              borderColor: "#2c2c3a",
-              borderWidth: 1,
-              callbacks: {
-                label: function (item) {
-                  var value = item.parsed.y;
-                  return item.dataset.label + " " + (value == null ? "기록 없음" : deps.formatNumber(value));
-                }
-              }
-            }
-          },
-          layout: { padding: { top: 8, left: 4, right: 12 } },
-          scales: {
-            x: { ticks: { color: "#c3c3cc", font: { size: 12 } }, grid: { display: false } },
-            y: { beginAtZero: true, ticks: { color: "#9a9aa8", precision: 0 }, grid: { color: "#2c2c3a" } }
-          }
-        }
-      });
-    } catch (error) {
-      wrap.hidden = true;
-      if (empty) {
-        empty.hidden = false;
-        empty.textContent = "7일 그래프를 그리지 못했습니다.";
-      }
-    }
-  }
-
   root.BotDashChart = {
     install: function (next) {
       deps = next;
     },
     render: function (options) {
       renderChart(options);
-    },
-    renderWeek: function () {
-      renderWeek();
     }
   };
 })(window);
