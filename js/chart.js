@@ -8,6 +8,10 @@
   function barColor(character) {
     var level = deps.visitorLevel(character.todayVisitors);
     if (level === "zero") return "#6e6e80";
+    if (level === "t10000") return "#e453ff";
+    if (level === "t5000") return "#ff3355";
+    if (level === "t1000") return "#ff4d2e";
+    if (level === "t500") return "#ff7a00";
     if (level === "high") return "#f5a623";
     if (level === "mid") return "#5266eb";
     if (level === "unknown") return "#3a3a48";

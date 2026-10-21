@@ -15,8 +15,12 @@ const DASHBOARD_CONFIG = {
   },
   defaultImage: "characters/images/default.svg",
   visitorThresholds: {
+    medium: 30,
     high: 100,
-    medium: 30
+    t500: 500,
+    t1000: 1000,
+    t5000: 5000,
+    t10000: 10000
   },
   // 어제 방문이 dropMinYesterday 이상이고, 감소율이 dropRate 이상이면 급감으로 표시
   dropRate: 0.3,

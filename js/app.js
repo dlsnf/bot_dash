@@ -30,7 +30,8 @@
     next: "botdash_next",
     scroll: "botdash_scroll",
     order: "botdash_order",
-    counts: "botdash_counts"
+    counts: "botdash_counts",
+    countsDay: "botdash_counts_day"
   };
   var FILTERS = { all: 1, has: 1, zero: 1 };
   var SORTS = { visitors_desc: 1, visitors_asc: 1, name: 1, drop: 1, posts: 1 };
@@ -414,11 +415,31 @@
     }).slice().sort(compareCharacters);
   }
 
+  var VISITOR_LEVELS = ["unknown", "zero", "low", "mid", "high", "t500", "t1000", "t5000", "t10000"];
+
+  function clearVisitorLevel(node) {
+    VISITOR_LEVELS.forEach(function (name) {
+      node.classList.remove("is-" + name);
+    });
+  }
+
   function visitorLevel(value) {
     if (value == null || !isFinite(value)) return "unknown";
     if (value === 0) return "zero";
-    if (value >= DASHBOARD_CONFIG.visitorThresholds.high) return "high";
-    if (value >= DASHBOARD_CONFIG.visitorThresholds.medium) return "mid";
+    var table = DASHBOARD_CONFIG.visitorThresholds || {};
+    var steps = [
+      ["t10000", "t10000", 10000],
+      ["t5000", "t5000", 5000],
+      ["t1000", "t1000", 1000],
+      ["t500", "t500", 500],
+      ["high", "high", 100],
+      ["mid", "medium", 30]
+    ];
+    for (var i = 0; i < steps.length; i++) {
+      var limit = Number(table[steps[i][1]]);
+      if (!isFinite(limit)) limit = steps[i][2];
+      if (value >= limit) return steps[i][0];
+    }
     return "low";
   }
 
@@ -1321,9 +1342,55 @@
       });
     }
     storageSet(STORAGE.counts, JSON.stringify(map));
+    stampCountCacheDay();
+  }
+
+  // 컴퓨터 시간대와 상관없이 한국시간 0시(밤 12시)에 날짜가 바뀐다.
+  function seoulDateKey(now) {
+    var date = now instanceof Date ? now : new Date(now || Date.now());
+    var seoul = new Date(date.getTime() + 9 * 60 * 60 * 1000);
+    function two(n) { return (n < 10 ? "0" : "") + n; }
+    return seoul.getUTCFullYear() + "-" + two(seoul.getUTCMonth() + 1) + "-" + two(seoul.getUTCDate());
+  }
+
+  function countCacheIsToday() {
+    return storageGet(STORAGE.countsDay) === seoulDateKey(new Date());
+  }
+
+  function stampCountCacheDay() {
+    storageSet(STORAGE.countsDay, seoulDateKey(new Date()));
+  }
+
+  function zeroedCount() {
+    return {
+      status: "ok",
+      cached: true,
+      dayReset: true,
+      posts: 0,
+      comments: 0,
+      today: 0,
+      total: 0,
+      postsToday: 0,
+      commentsToday: 0,
+      gaps: null
+    };
   }
 
   function seedCachedCounts() {
+    var freshDay = !countCacheIsToday();
+    state.countDayReset = freshDay;
+    if (freshDay) {
+      state.characters.forEach(function (character) {
+        (character.blogs || []).forEach(function (blog) {
+          var key = countableBlogUrl(blog.url || "");
+          if (!key) return;
+          var current = state.blogCounts[key];
+          if (current && (!current.dayReset || current.refreshing || current.settled)) return;
+          state.blogCounts[key] = zeroedCount();
+        });
+      });
+      return;
+    }
     var map = readCountCache();
     state.characters.forEach(function (character) {
       (character.blogs || []).forEach(function (blog) {
@@ -1614,7 +1681,8 @@
     armCountRefresh(false);
   }
 
-  // 첫 조회는 저장해 둔 집계를 먼저 그린 뒤 서버의 10분 캐시로 뒤에서 다시 받는다. 정각 갱신만 서버를 다시 친다.
+  // 같은 날 다시 열면 저장해 둔 집계를 먼저 그린 뒤 서버의 10분 캐시로 뒤에서 다시 받는다.
+  // 한국시간으로 날짜가 바뀐 뒤 처음 열면 저장값을 0으로 그리고, 캐시를 건너뛴 응답이 오면 그 숫자로 바꾼다.
   function fetchCounts(key, cacheMode) {
     return fetch("profile.php?view=counts&window=today&blog=" + encodeURIComponent(key), {
       credentials: "same-origin",
@@ -1625,6 +1693,7 @@
 
   function requestBlogCounts() {
     seedCachedCounts();
+    var cacheMode = state.countDayReset ? "reload" : "default";
     var pending = [];
     var seen = {};
     state.characters.forEach(function (character) {
@@ -1652,7 +1721,7 @@
     var incoming = {};
     var left = pending.length;
     pending.forEach(function (key) {
-      fetchCounts(key, "default")
+      fetchCounts(key, cacheMode)
         .then(function (response) {
           if (!response.ok) throw new Error("counts");
           return response.json();
@@ -1766,9 +1835,7 @@
         else fadeCount(totalReel);
       }
     }
-    ["unknown", "zero", "low", "mid", "high"].forEach(function (name) {
-      block.classList.remove("is-" + name);
-    });
+    clearVisitorLevel(block);
     block.classList.add("is-" + (loading || today == null ? "unknown" : visitorLevel(today)));
   }
 
@@ -1944,7 +2011,8 @@
     document.querySelectorAll("article.card[data-character]").forEach(function (card) {
       var character = findById(card.getAttribute("data-character"));
       if (!character || !characterLivePending(character)) return;
-      card.classList.remove("is-zero", "is-low", "is-mid", "is-high", "is-drop");
+      clearVisitorLevel(card);
+      card.classList.remove("is-drop");
       card.classList.add("is-unknown");
     });
     if (state.view === "stats") {
@@ -2449,7 +2517,7 @@
         applyVisitorBlog(block, block.getAttribute("data-visitor-blog"));
       });
       var pendingCard = characterLivePending(character);
-      card.classList.remove("is-unknown", "is-zero", "is-low", "is-mid", "is-high");
+      clearVisitorLevel(card);
       card.classList.add("is-" + (pendingCard ? "unknown" : visitorLevel(character.todayVisitors)));
       card.classList.toggle("is-drop", !pendingCard && isBigDrop(character));
     });
@@ -3047,7 +3115,12 @@
     syncCountReloadSpin();
     if (state.ready) {
       seedCachedCounts();
-      paintLivePlaceholders();
+      if (state.countDayReset) {
+        paintVisitorFigures();
+        paintBlogCounts(null);
+      } else {
+        paintLivePlaceholders();
+      }
     }
     try {
       if (typeof CharacterParser === "undefined") throw new Error("parser.js를 불러오지 못했습니다.");
@@ -3304,6 +3377,7 @@
       state.blogCounts = {};
       await loadCharacters();
       seedCachedCounts();
+      if (state.countDayReset) syncLiveVisitors();
       try { await warmThumbs(thumbKeysFor(state.characters)); } catch (error) {}
       renderNotice();
       var id = new URLSearchParams(location.search).get("id");
