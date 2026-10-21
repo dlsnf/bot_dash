@@ -1,9 +1,8 @@
 # 민감 정보. 공개 저장소에 올리지 않습니다.
 characters/
 characters/**/*.md
-data/stats.json
-data/blogger_totals.json
-data/blogger_count.log
+# 런타임 파일만 둔다. 프로젝트 복사본이 data 안에 생겨도 올리지 않는다.
+data/**
 js/config.js
 *.local
 .env

@@ -122,7 +122,199 @@
 
   document.addEventListener("DOMContentLoaded", boot);
 
+  // 터치 기기에서 맨 위를 아래로 당겼다 놓으면 페이지를 다시 연다.
+  // 아이콘은 화면 밖에서 반 바퀴 돌아 있고, 끝까지 내리면 한바퀴 반을 더 돌아 정방향이 된다.
+  // 새로고침 기준 전에는 당긴 만큼 나타났다가 올리면 사라진다. 기준을 넘으면 불투명하다.
+  // 기준을 넘겨 놓으면 그 자리에서 계속 돌고, 0.5초 뒤에 페이지를 다시 연다.
+  // 손을 떼기 전에 위로 올리면 페이지가 다시 스크롤된다.
+  function bindPullRefresh() {
+    var page = document.body.dataset.page;
+    if (page !== "dashboard" && page !== "detail") return;
+    if (document.body.dataset.pullRefresh) return;
+    if (!window.matchMedia("(hover: none) and (pointer: coarse)").matches) return;
+    document.body.dataset.pullRefresh = "1";
+    var icon = h("i", { class: "fa-solid fa-rotate-right", "aria-hidden": "true" });
+    var pill = h("p", { class: "pull-refresh-pill" }, icon);
+    var pullHost = h("div", { class: "pull-refresh", "aria-hidden": "true" }, pill);
+    document.body.appendChild(pullHost);
+    var startY = 0;
+    var startX = 0;
+    var tracking = false;
+    var owned = false;
+    var paging = false;
+    var raw = 0;
+    var fired = false;
+    var queued = false;
+    var paintGen = 0;
+    var spinAnim = null;
+    var FIRE = 76;
+    var MAX = 140;
+    var view = { distance: 0, ready: false, angle: 0, opacity: 0, snap: false };
+
+    function scrolledTop() {
+      return (window.scrollY || document.documentElement.scrollTop || 0) <= 0;
+    }
+
+    function blockedTarget(node) {
+      var el = node;
+      while (el && el !== document.body) {
+        if (el.id === "swipeHandle") return true;
+        el = el.parentNode;
+      }
+      return document.body.classList.contains("modal-open") || document.body.classList.contains("photo-open");
+    }
+
+    function pullAngle(distance) {
+      var span = Math.min(Math.max(distance, 0), MAX) / MAX * 540;
+      return Math.round((180 + span) * 10) / 10;
+    }
+
+    function pullOpacity(dy) {
+      if (dy >= FIRE) return 1;
+      if (dy <= 0) return 0;
+      return Math.round(dy / FIRE * 100) / 100;
+    }
+
+    function pullDistance(dy) {
+      return Math.min(MAX, Math.round(dy * 12) / 10);
+    }
+
+    function place(distance, angle) {
+      return "translate3d(0, calc(-100% - 16px + " + distance + "px), 0) rotate(" + angle + "deg)";
+    }
+
+    // 당기는 중에는 스크롤 값을 읽지 않는다.
+    // 읽으면 방금 바꾼 transform 때문에 배치가 다시 계산되어 회전이 끊긴다.
+    function paintPull() {
+      queued = false;
+      pullHost.classList.toggle("is-snap", view.snap);
+      pullHost.classList.toggle("is-ready", view.ready);
+      if (view.distance > 0) {
+        pill.style.transform = place(view.distance, view.angle);
+        pill.style.opacity = String(view.opacity);
+      } else {
+        pill.style.transform = "";
+        pill.style.opacity = "0";
+      }
+    }
+
+    function schedulePull() {
+      if (queued) return;
+      queued = true;
+      var gen = paintGen;
+      requestAnimationFrame(function () {
+        if (gen !== paintGen) return;
+        paintPull();
+      });
+    }
+
+    function resetPull() {
+      tracking = false;
+      raw = 0;
+      view.distance = 0;
+      view.ready = false;
+      view.angle = 0;
+      view.opacity = 0;
+      view.snap = true;
+      if (spinAnim) {
+        spinAnim.cancel();
+        spinAnim = null;
+      }
+      paintPull();
+    }
+
+    function spinInPlace() {
+      paintGen += 1;
+      queued = false;
+      var from = place(view.distance, view.angle);
+      var to = place(view.distance, view.angle + 360);
+      pill.style.opacity = "1";
+      pill.style.transform = from;
+      spinAnim = pill.animate([
+        { transform: from, opacity: 1 },
+        { transform: to, opacity: 1 }
+      ], { duration: 750, iterations: Infinity, easing: "linear" });
+    }
+
+    function followFinger(dy) {
+      if (dy > 0) {
+        if (paging) {
+          paging = false;
+          window.scrollTo(0, 0);
+        }
+        raw = dy;
+        view.distance = pullDistance(dy);
+        view.ready = dy >= FIRE;
+        view.angle = pullAngle(view.distance);
+        view.opacity = pullOpacity(dy);
+        view.snap = false;
+        schedulePull();
+        return;
+      }
+      paging = true;
+      raw = dy;
+      view.distance = 0;
+      view.ready = false;
+      view.angle = 0;
+      view.opacity = 0;
+      view.snap = false;
+      schedulePull();
+      window.scrollTo(0, -dy);
+    }
+
+    document.addEventListener("touchstart", function (event) {
+      if (fired || event.touches.length !== 1) return;
+      if (!scrolledTop() || blockedTarget(event.target)) return;
+      var touch = event.touches[0];
+      startY = touch.clientY;
+      startX = touch.clientX;
+      tracking = true;
+      owned = false;
+      paging = false;
+      raw = 0;
+      view.snap = false;
+      pullHost.classList.remove("is-snap");
+    }, { passive: true });
+
+    document.addEventListener("touchmove", function (event) {
+      if (!tracking || fired || event.touches.length !== 1) return;
+      var touch = event.touches[0];
+      var dy = touch.clientY - startY;
+      var dx = touch.clientX - startX;
+      if (!owned && raw <= 0 && dy > 0 && Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 12) {
+        tracking = false;
+        return;
+      }
+      if (!owned && dy < 8) return;
+      if (event.cancelable) event.preventDefault();
+      owned = true;
+      followFinger(dy);
+    }, { passive: false });
+
+    document.addEventListener("touchend", function () {
+      if (!tracking || fired) return;
+      var ready = raw >= FIRE;
+      tracking = false;
+      if (!ready) {
+        resetPull();
+        return;
+      }
+      fired = true;
+      view.ready = true;
+      view.opacity = 1;
+      view.snap = false;
+      paintPull();
+      spinInPlace();
+      setTimeout(function () { location.reload(); }, 500);
+    });
+
+    document.addEventListener("touchcancel", function () {
+      if (!fired) resetPull();
+    });
+  }
+
   function boot() {
+    bindPullRefresh();
     var page = document.body.dataset.page;
     if (typeof DASHBOARD_CONFIG === "undefined") {
       document.body.classList.add("auth-ready");
@@ -1361,32 +1553,18 @@
     storageSet(STORAGE.countsDay, seoulDateKey(new Date()));
   }
 
-  function zeroedCount() {
-    return {
-      status: "ok",
-      cached: true,
-      dayReset: true,
-      posts: 0,
-      comments: 0,
-      today: 0,
-      total: 0,
-      postsToday: 0,
-      commentsToday: 0,
-      gaps: null
-    };
-  }
-
   function seedCachedCounts() {
     var freshDay = !countCacheIsToday();
     state.countDayReset = freshDay;
     if (freshDay) {
+      storageSet(STORAGE.counts, "{}");
       state.characters.forEach(function (character) {
         (character.blogs || []).forEach(function (blog) {
           var key = countableBlogUrl(blog.url || "");
           if (!key) return;
           var current = state.blogCounts[key];
-          if (current && (!current.dayReset || current.refreshing || current.settled)) return;
-          state.blogCounts[key] = zeroedCount();
+          if (current && (current.refreshing || (current.status === "ok" && !current.cached))) return;
+          state.blogCounts[key] = { status: "loading" };
         });
       });
       return;
@@ -1682,7 +1860,7 @@
   }
 
   // 같은 날 다시 열면 저장해 둔 집계를 먼저 그린 뒤 서버의 10분 캐시로 뒤에서 다시 받는다.
-  // 한국시간으로 날짜가 바뀐 뒤 처음 열면 저장값을 0으로 그리고, 캐시를 건너뛴 응답이 오면 그 숫자로 바꾼다.
+  // 한국시간으로 날짜가 바뀐 뒤 처음 열면 저장값을 지우고, 오늘 방문자를 캐시 없이 다시 받는다.
   function fetchCounts(key, cacheMode) {
     return fetch("profile.php?view=counts&window=today&blog=" + encodeURIComponent(key), {
       credentials: "same-origin",
@@ -3115,12 +3293,7 @@
     syncCountReloadSpin();
     if (state.ready) {
       seedCachedCounts();
-      if (state.countDayReset) {
-        paintVisitorFigures();
-        paintBlogCounts(null);
-      } else {
-        paintLivePlaceholders();
-      }
+      paintLivePlaceholders();
     }
     try {
       if (typeof CharacterParser === "undefined") throw new Error("parser.js를 불러오지 못했습니다.");
@@ -3211,7 +3384,8 @@
     bindViewTabs();
     watchCardColumns();
     document.getElementById("logoutBtn").addEventListener("click", logoutUser);
-    document.getElementById("refreshBtn").addEventListener("click", loadAndRender);
+    var refreshBtn = document.getElementById("refreshBtn");
+    if (refreshBtn) refreshBtn.addEventListener("click", loadAndRender);
     var topRefresh = document.getElementById("topRefreshBtn");
     if (topRefresh) topRefresh.addEventListener("click", function () { location.reload(); });
     var countReload = document.getElementById("countReload");
@@ -3395,7 +3569,7 @@
       requestBlogCounts();
       refreshThumbs();
     } catch (error) {
-      root.replaceChildren(missingDetail(error.message || "데이터를 불러오지 못했습니다."));
+      if (root) root.replaceChildren(missingDetail(error.message || "데이터를 불러오지 못했습니다."));
     }
   }
 
