@@ -20,6 +20,16 @@
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='4' fill='%235266eb'/%3E%3C/svg%3E">
   <script>
     (function () {
+      if (window.matchMedia("(hover: none) and (pointer: coarse)").matches) {
+        var viewport = document.querySelector('meta[name="viewport"]');
+        if (viewport) viewport.setAttribute("content", "width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no");
+        ["gesturestart", "gesturechange", "gestureend"].forEach(function (type) {
+          document.addEventListener(type, function (event) { event.preventDefault(); }, { passive: false });
+        });
+        document.addEventListener("touchmove", function (event) {
+          if (event.touches && event.touches.length > 1 && event.cancelable) event.preventDefault();
+        }, { passive: false });
+      }
       if (/\/bot_dash$/i.test(location.pathname)) {
         location.replace(location.pathname + "/" + location.search + location.hash);
         return;
@@ -35,7 +45,7 @@
     })();
   </script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
-  <link rel="stylesheet" href="css/style.css?v=18">
+  <link rel="stylesheet" href="css/style.css?v=20">
 </head>
 <body data-page="dashboard" class="is-booting">
   <a class="skip" href="#cards">캐릭터 목록으로 건너뛰기</a>
@@ -206,6 +216,6 @@
   <script src="js/reel.js"></script>
   <script src="js/chart.js?v=7"></script>
   <script src="js/login.js"></script>
-  <script src="js/app.js?v=23"></script>
+  <script src="js/app.js?v=24"></script>
 </body>
 </html>

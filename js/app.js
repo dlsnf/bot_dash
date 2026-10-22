@@ -155,12 +155,7 @@
       return (window.scrollY || document.documentElement.scrollTop || 0) <= 0;
     }
 
-    function blockedTarget(node) {
-      var el = node;
-      while (el && el !== document.body) {
-        if (el.id === "swipeHandle") return true;
-        el = el.parentNode;
-      }
+    function blockedTarget() {
       return document.body.classList.contains("modal-open") || document.body.classList.contains("photo-open");
     }
 
@@ -264,7 +259,7 @@
 
     document.addEventListener("touchstart", function (event) {
       if (fired || event.touches.length !== 1) return;
-      if (!scrolledTop() || blockedTarget(event.target)) return;
+      if (!scrolledTop() || blockedTarget()) return;
       var touch = event.touches[0];
       startY = touch.clientY;
       startX = touch.clientX;
@@ -3507,43 +3502,6 @@
     );
   }
 
-  function bindSwipe() {
-    var handle = document.getElementById("swipeHandle");
-    var sheet = document.getElementById("detailSheet");
-    if (!handle || !sheet) return;
-    var startY = 0;
-    var startX = 0;
-    var dragging = false;
-    handle.addEventListener("pointerdown", function (event) {
-      dragging = true;
-      startY = event.clientY;
-      startX = event.clientX;
-      if (handle.setPointerCapture) handle.setPointerCapture(event.pointerId);
-      sheet.style.transition = "none";
-    });
-    handle.addEventListener("pointermove", function (event) {
-      if (!dragging) return;
-      var dy = Math.max(0, event.clientY - startY);
-      var dx = event.clientX - startX;
-      if (Math.abs(dx) > dy) return;
-      sheet.style.transform = "translateY(" + dy + "px)";
-    });
-    function end(event) {
-      if (!dragging) return;
-      dragging = false;
-      var dy = event.clientY - startY;
-      sheet.style.transition = "";
-      sheet.style.transform = "";
-      if (dy > 90) location.href = "index.html";
-    }
-    handle.addEventListener("pointerup", end);
-    handle.addEventListener("pointercancel", function () {
-      dragging = false;
-      sheet.style.transition = "";
-      sheet.style.transform = "";
-    });
-  }
-
   async function loadDetail() {
     var root = document.getElementById("detailRoot");
     try {
@@ -3576,7 +3534,6 @@
   function initDetailPage() {
     var logout = document.getElementById("logoutBtn");
     if (logout) logout.addEventListener("click", logoutUser);
-    bindSwipe();
     document.addEventListener("keydown", function (event) {
       if (state.photoOpen && event.key === "Escape") {
         event.preventDefault();
