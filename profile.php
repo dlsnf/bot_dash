@@ -672,51 +672,65 @@ function naver_counts($id) {
             "commentsToday" => "short"
         ));
     }
-    $jobs = array();
-    foreach ($logNos as $logNo) {
-        $jobs[] = array(
-            "url" => "https://m.blog.naver.com/" . rawurlencode($id) . "/" . rawurlencode($logNo),
-            "limit" => BLOG_HTML_LIMIT,
-            "allow" => "naver_host_ok",
-            "headers" => array(),
-            "reject" => true,
-            "timeout" => 6,
-            "decode" => true
-        );
+    // 목록에 댓글 수가 있으면 글 페이지를 글마다 다시 받지 않는다.
+    // 그 페이지가 하나라도 막히면 합계 전체가 비었다.
+    $pageCounts = naver_list_comment_counts($body);
+    $fromList = is_array($pageCounts);
+    if ($fromList) {
+        foreach ($logNos as $logNo) {
+            if (!array_key_exists($logNo, $pageCounts)) { $fromList = false; break; }
+        }
     }
-    $pages = fetch_urls($jobs);
-    $sum = 0;
-    $pageCounts = array();
     $htmlFresh = array();
-    foreach ($pages as $index => $page) {
-        list($pageStatus, $html) = $page;
-        $count = naver_comment_count($html);
-        if ($pageStatus !== 200 || $count === null) {
-            return naver_count_row($total, null, $visitors[0], $visitors[1], $postsToday, null, array(
-                "comments" => "unread",
-                "commentsToday" => "unread"
-            ));
+    if (!$fromList) {
+        $pageCounts = array();
+        $jobs = array();
+        foreach ($logNos as $logNo) {
+            $jobs[] = array(
+                "url" => "https://m.blog.naver.com/" . rawurlencode($id) . "/" . rawurlencode($logNo),
+                "limit" => BLOG_HTML_LIMIT,
+                "allow" => "naver_host_ok",
+                "headers" => array(),
+                "reject" => true,
+                "timeout" => 6,
+                "decode" => true
+            );
         }
-        $logNo = $logNos[$index];
-        $pageCounts[$logNo] = $count;
-        $sum += $count;
-        if ($count === 0) continue;
-        // 글이 한국시간 오늘이면 그 글의 댓글도 오늘이다. 시각이 없다고 0으로 두지 않는다.
-        $postRaw = isset($postTimes[$logNo]) ? $postTimes[$logNo] : "";
-        $fresh = comments_on_fresh_post($postRaw, $count);
-        if ($fresh === null) {
-            $fresh = count_days($html, '/"(?:regTime|commentDate|registeredDate)"\s*:\s*"([^"]+)"/');
-            if ($fresh === null) {
-                $fresh = count_days($html, '/u_cbox_date[^>]*>\s*([^<]{6,40})</i');
+        $pages = fetch_urls($jobs);
+        foreach ($pages as $index => $page) {
+            list($pageStatus, $html) = $page;
+            $count = naver_comment_count($html);
+            if ($pageStatus !== 200 || $count === null) {
+                return naver_count_row($total, null, $visitors[0], $visitors[1], $postsToday, null, array(
+                    "comments" => "unread",
+                    "commentsToday" => "unread"
+                ));
             }
+            $logNo = $logNos[$index];
+            $pageCounts[$logNo] = $count;
+            if ($count === 0) continue;
+            $postRaw = isset($postTimes[$logNo]) ? $postTimes[$logNo] : "";
+            $fresh = comments_on_fresh_post($postRaw, $count);
+            if ($fresh === null) {
+                $fresh = count_days($html, '/"(?:regTime|commentDate|registeredDate)"\s*:\s*"([^"]+)"/');
+                if ($fresh === null) {
+                    $fresh = count_days($html, '/u_cbox_date[^>]*>\s*([^<]{6,40})</i');
+                }
+            }
+            $htmlFresh[$logNo] = $fresh;
         }
-        $htmlFresh[$logNo] = $fresh;
+    }
+    $sum = 0;
+    foreach ($pageCounts as $logNo => $count) {
+        if (!in_array((string) $logNo, $logNos, true)) continue;
+        $sum += $count;
     }
     // 글 페이지 숫자에 주인 댓글이 빠져 있으면 댓글 목록의 더 큰 합으로 올린다.
     $extras = naver_comment_extras($id, $blogNo, $pageCounts);
     $commentsToday = 0;
     $commentsKnown = true;
     foreach ($pageCounts as $logNo => $count) {
+        if (!in_array((string) $logNo, $logNos, true)) continue;
         if (isset($extras[$logNo]) && is_int($extras[$logNo]["total"]) && $extras[$logNo]["total"] > $count) {
             $sum += $extras[$logNo]["total"] - $count;
             $count = $extras[$logNo]["total"];
@@ -727,6 +741,10 @@ function naver_counts($id) {
             continue;
         }
         $fresh = array_key_exists($logNo, $htmlFresh) ? $htmlFresh[$logNo] : null;
+        if ($fresh === null) {
+            $postRaw = isset($postTimes[$logNo]) ? $postTimes[$logNo] : "";
+            $fresh = comments_on_fresh_post($postRaw, $count);
+        }
         if ($fresh === null) {
             $commentsKnown = false;
             continue;
@@ -757,12 +775,12 @@ function naver_count_row($posts, $comments, $today, $total, $postsToday, $commen
     return array($posts, $comments, $today, $total, $postsToday, $commentsToday, $out);
 }
 
-function tistory_comments($host, $postTotal) {
+function tistory_comments($host, $postTotal, $fetched = null) {
     if ($postTotal === 0) return array(0, null, array());
     $allow = function ($url) use ($host) {
         if (host_of($url) !== $host) return false;
         $path = parse_url($url, PHP_URL_PATH);
-        if (!is_string($path) || ($path !== "" && $path !== "/")) return false;
+        if (is_string($path) && $path !== "" && $path !== "/") return false;
         $query = array();
         $rawQuery = parse_url($url, PHP_URL_QUERY);
         if (is_string($rawQuery) && $rawQuery !== "") parse_str($rawQuery, $query);
@@ -772,8 +790,17 @@ function tistory_comments($host, $postTotal) {
             && preg_match('/^[1-9]\d{0,2}$/', (string) $query["page"]);
     };
     $counts = array();
+    $status = 0;
+    $html = "";
     $browser = tistory_browser();
-    list($status, $html) = fetch_url("https://" . $host . "/", BLOG_HTML_LIMIT, $allow, array(), true, 6, true, $browser);
+    if (is_array($fetched)) {
+        $status = isset($fetched[0]) ? (int) $fetched[0] : 0;
+        $html = isset($fetched[1]) ? (string) $fetched[1] : "";
+    }
+    // 방문자 수를 읽을 때 받은 첫 화면을 다시 쓴다. 두 번째 요청이 막히면 댓글만 비었다.
+    if ($status !== 200 || $html === "") {
+        list($status, $html) = fetch_url("https://" . $host . "/", BLOG_HTML_LIMIT, $allow, array(), true, 6, true, $browser);
+    }
     if ($status !== 200 || $html === "") return array(null, "unread", array());
     $added = tistory_comment_page($html, $counts);
     if ($added === null) return array(null, "unread", array());
@@ -1028,9 +1055,13 @@ function tistory_live($host) {
         $commentsToday = 0;
         $postsTodayOut = 0;
     } else {
-        list($comments, $commentGap, $spanCounts) = tistory_comments($host, $posts);
+        list($comments, $commentGap, $spanCounts) = tistory_comments($host, $posts, $wave[2]);
         list($commentsToday, $todayGap, $fullCounts) = tistory_comments_today($host, $entryIds);
-        if (is_int($comments)) {
+        $apiTotal = tistory_nodes_total(is_array($fullCounts) ? $fullCounts : array(), $entryIds);
+        if (is_int($apiTotal)) {
+            $comments = $apiTotal;
+            $commentGap = null;
+        } elseif (is_int($comments)) {
             $comments = tistory_apply_hidden_comments($comments, is_array($spanCounts) ? $spanCounts : array(), is_array($fullCounts) ? $fullCounts : array());
         }
         $postsTodayOut = $postsToday;

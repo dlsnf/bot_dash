@@ -113,6 +113,26 @@ expect("2페이지는 중복을 빼고 하나", $added2, 1);
 expect("빈 칸은 0으로 합산", tistory_comment_total($counts, 3), 5);
 expect("글 수보다 적으면 합을 비움", tistory_comment_total($counts, 4), null);
 
+$coverCounts = array();
+$cover = '<article><a href="/11" class="link-article"></a><span class="reply">2</span></article>'
+    . '<article><a href="/1" class="link-article"></a><span class="date">2026.10.13</span><span class="reply">4</span></article>'
+    . '<div class="article-reply"><span class="reply">9</span></div>';
+expect("커버 스킨 댓글", tistory_comment_page($cover, $coverCounts), 2);
+expect("커버 글 11", $coverCounts["11"], 2);
+expect("커버 글 1", $coverCounts["1"], 4);
+expect("커버 합계", tistory_comment_total($coverCounts, 2), 6);
+$coverAgain = $coverCounts;
+expect("같은 글은 한 번", tistory_comment_page($cover, $coverAgain), 0);
+expect("댓글 칸이 없으면 비움", tistory_comment_page("<article><a href=\"/3\"></a></article>", $coverCounts), null);
+expect("댓글 API 합", tistory_nodes_total(array("11" => 2, "1" => 4), array("1", "11")), 6);
+expect("댓글 API에 글이 빠지면 비움", tistory_nodes_total(array("11" => 2), array("11", "1")), null);
+
+$naverList = '{"postList":[{"logNo":"10","commentCount":""},{"logNo":"11","commentCount":"6"}]}';
+$naverCounts = naver_list_comment_counts($naverList);
+expect("네이버 빈 댓글은 0", $naverCounts["10"], 0);
+expect("네이버 목록 댓글", $naverCounts["11"], 6);
+expect("네이버 댓글 칸이 없으면 비움", naver_list_comment_counts('{"postList":[{"logNo":"10"}]}'), null);
+
 expect("blogspot.com 이름", blogspot_name("doda-in-korea.blogspot.com"), "doda-in-korea");
 expect("blogspot.co.kr 이름", blogspot_name("doda-in-korea.blogspot.co.kr"), "doda-in-korea");
 expect("blogspot.com.au 이름", blogspot_name("doda-in-korea.blogspot.com.au"), "doda-in-korea");

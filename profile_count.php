@@ -218,6 +218,21 @@ function tistory_comment_window($json, $now = null) {
  * 블로그 주인 댓글이 목록 숫자에서 빠져 있을 때의 차이다.
  * 같거나 더 적으면 목록 숫자를 그대로 둔다.
  */
+/**
+ * 글마다 댓글 API를 끝까지 읽었을 때의 합. 한 글이라도 없으면 null.
+ * 목록 HTML이 댓글 수를 빠뜨려도 이 합이 전체다.
+ */
+function tistory_nodes_total($full, $ids) {
+    if (!is_array($full) || !is_array($ids) || !$ids) return null;
+    $sum = 0;
+    foreach ($ids as $id) {
+        $key = (string) $id;
+        if (!array_key_exists($key, $full) || !is_int($full[$key]) || $full[$key] < 0) return null;
+        $sum += $full[$key];
+    }
+    return $sum;
+}
+
 function tistory_apply_hidden_comments($base, $spans, $full) {
     if (!is_int($base) || $base < 0 || !is_array($spans) || !is_array($full)) return $base;
     $extra = 0;
@@ -227,6 +242,28 @@ function tistory_apply_hidden_comments($base, $spans, $full) {
         if ($nodes > $spans[$key]) $extra += $nodes - $spans[$key];
     }
     return $base + $extra;
+}
+
+/**
+ * 글 목록 JSON의 댓글 수. 빈 문자열은 0이다.
+ * 칸이 없거나 숫자가 아니면 null 이라서 글 페이지를 다시 본다.
+ */
+function naver_list_comment_counts($body) {
+    $data = json_decode((string) $body, true);
+    if (!is_array($data) || !isset($data["postList"]) || !is_array($data["postList"])) return null;
+    $counts = array();
+    foreach ($data["postList"] as $post) {
+        if (!is_array($post) || !isset($post["logNo"]) || !array_key_exists("commentCount", $post)) return null;
+        $logNo = (string) $post["logNo"];
+        if (!preg_match('/^\d{1,16}$/', $logNo) || isset($counts[$logNo])) return null;
+        $raw = $post["commentCount"];
+        if ($raw === "" || $raw === null) $count = 0;
+        else $count = as_count($raw);
+        if (!is_int($count)) return null;
+        $counts[$logNo] = $count;
+    }
+    if (!$counts) return null;
+    return $counts;
 }
 
 function naver_comment_count($html) {
@@ -344,15 +381,28 @@ function rss_posts_on_day($xml, $now = null) {
 }
 
 function tistory_comment_page($html, &$counts) {
-    if (!preg_match_all('/id="commentCount(\d+)_\d+"[^>]*>\s*(\d*)\s*</', $html, $matched, PREG_SET_ORDER)) {
-        return null;
-    }
     $added = 0;
-    foreach ($matched as $row) {
-        if (isset($counts[$row[1]])) continue;
-        $counts[$row[1]] = ($row[2] === "") ? 0 : (int) $row[2];
-        $added += 1;
+    $saw = false;
+    if (preg_match_all('/id="commentCount(\d+)_\d+"[^>]*>\s*(\d*)\s*</', $html, $matched, PREG_SET_ORDER)) {
+        $saw = true;
+        foreach ($matched as $row) {
+            if (isset($counts[$row[1]])) continue;
+            $counts[$row[1]] = ($row[2] === "") ? 0 : (int) $row[2];
+            $added += 1;
+        }
     }
+    // 커버 스킨은 commentCount 아이디 없이 글 카드의 span.reply에 숫자를 넣는다.
+    if (preg_match_all('/<article\b[^>]*>.*?<\/article>/is', $html, $articles)) {
+        foreach ($articles[0] as $article) {
+            if (!preg_match('/<span\s+class="reply"[^>]*>\s*(\d+)\s*<\/span>/i', $article, $reply)) continue;
+            if (!preg_match('/href="(?:https?:\/\/[^"\/]+)?\/(\d+)\/?(?:["#?])/', $article, $id)) continue;
+            $saw = true;
+            if (isset($counts[$id[1]])) continue;
+            $counts[$id[1]] = (int) $reply[1];
+            $added += 1;
+        }
+    }
+    if (!$saw) return null;
     return $added;
 }
 
