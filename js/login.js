@@ -82,8 +82,12 @@
 
     function lockMessage(lockUntil) {
       var remain = Math.max(0, lockUntil - Date.now());
-      var minutes = Math.floor(remain / 60000);
+      var days = Math.floor(remain / 86400000);
+      var hours = Math.floor((remain % 86400000) / 3600000);
+      var minutes = Math.floor((remain % 3600000) / 60000);
       var seconds = Math.floor((remain % 60000) / 1000);
+      if (days > 0) return "로그인이 일시 잠겼습니다. " + days + "일 " + hours + "시간 후 다시 시도하세요.";
+      if (hours > 0) return "로그인이 일시 잠겼습니다. " + hours + "시간 " + minutes + "분 후 다시 시도하세요.";
       return "로그인이 일시 잠겼습니다. " + minutes + "분 " + seconds + "초 후 다시 시도하세요.";
     }
 

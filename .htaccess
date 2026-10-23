@@ -3,10 +3,17 @@
 # 그때는 README의 Header 줄을 VirtualHost에 넣고 httpd를 다시 읽힌다.
 <IfModule mod_headers.c>
   Header set X-Robots-Tag "noindex, nofollow, noarchive, nosnippet"
+  Header always set X-Frame-Options "DENY"
+  Header always set X-Content-Type-Options "nosniff"
+  Header always set Strict-Transport-Security "max-age=15552000"
+  Header always set Content-Security-Policy "default-src 'self'; script-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; style-src 'self' https://cdnjs.cloudflare.com; font-src 'self' https://cdnjs.cloudflare.com; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
 </IfModule>
 
 # characters 는 마크다운과 이미지만 둔다. 프로젝트 복사본이 들어가도 실행하거나 내려받지 않는다.
 <IfModule mod_rewrite.c>
   RewriteEngine On
+  # data 는 PHP가 디스크로 읽는다. 브라우저 주소로는 열지 않는다.
+  RewriteRule ^data(?:/|$) - [F,L]
+  RewriteRule ^characters/.+\.md$ - [F,L,NC]
   RewriteRule ^characters/.+\.(php|phtml|html?|js|css|json|log)$ - [F,L]
 </IfModule>

@@ -15,6 +15,15 @@ function botdash_json($status, $payload) {
     exit;
 }
 
+function botdash_lock_seconds($fails) {
+    // 5번마다 잠근다. 처음 10분, 다음 1시간, 그 다음은 하루. 횟수는 성공하기 전까지 남긴다.
+    if ($fails < 5 || $fails % 5 !== 0) return 0;
+    $round = intdiv($fails, 5);
+    if ($round === 1) return 600;
+    if ($round === 2) return 3600;
+    return 86400;
+}
+
 $view = isset($_GET["view"]) ? (string) $_GET["view"] : "";
 if ($view === "session") {
     botdash_json(200, array("ok" => botdash_logged_in()));
@@ -45,14 +54,11 @@ $userOk = hash_equals($expectUser, $username);
 $passOk = hash_equals($expectPass, $password);
 if (!$userOk || !$passOk) {
     $fails = $lock["fails"] + 1;
-    $until = 0;
-    if ($fails >= 5) {
-        $until = $now + 600;
-        $fails = 0;
-    }
+    $seconds = botdash_lock_seconds($fails);
+    $until = $seconds > 0 ? $now + $seconds : 0;
     botdash_write_lock($fails, $until);
     if ($until > $now) botdash_json(429, array("ok" => false, "retryAfter" => $until - $now));
-    botdash_json(401, array("ok" => false, "fails" => $fails));
+    botdash_json(401, array("ok" => false, "fails" => $fails % 5));
 }
 
 botdash_clear_lock();

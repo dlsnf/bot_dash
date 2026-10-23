@@ -1077,11 +1077,11 @@ function tistory_live($host) {
 }
 
 function image_type($body, $header) {
+    // 원격 Content-Type 은 쓰지 않는다. image/svg+xml 이 이 주소로 열리면 스크립트가 된다.
     if (strncmp($body, "\xFF\xD8\xFF", 3) === 0) return "image/jpeg";
     if (strncmp($body, "\x89PNG", 4) === 0) return "image/png";
     if (strncmp($body, "GIF8", 4) === 0) return "image/gif";
-    if (strncmp($body, "RIFF", 4) === 0) return "image/webp";
-    if (stripos($header, "image/") === 0) return trim(explode(";", $header)[0]);
+    if (strlen($body) >= 12 && strncmp($body, "RIFF", 4) === 0 && substr($body, 8, 4) === "WEBP") return "image/webp";
     return "";
 }
 
