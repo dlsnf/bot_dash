@@ -266,6 +266,130 @@ function naver_list_comment_counts($body) {
     return $counts;
 }
 
+/**
+ * 네이버 글 목록을 몇 페이지로 받을지. 글이 없으면 0.
+ * maxPages 가 0이면 상한이 없다. 상한을 넘으면 null.
+ */
+function naver_list_page_count($total, $pageSize, $maxPages) {
+    if (!is_int($total) || $total < 0) return null;
+    if (!is_int($pageSize) || $pageSize < 1) return null;
+    if (!is_int($maxPages) || $maxPages < 0) return null;
+    if ($total === 0) return 0;
+    $pages = intdiv($total + $pageSize - 1, $pageSize);
+    if ($maxPages !== 0 && $pages > $maxPages) return null;
+    return $pages;
+}
+
+function naver_list_log_nos($body) {
+    if (!preg_match_all('/"logNo"\s*:\s*"(\d+)"/', (string) $body, $matched)) return array();
+    return $matched[1];
+}
+
+/**
+ * 여러 페이지의 글 목록을 한 표로 합친다.
+ * 글이 빠지거나 같은 글번호가 두 번이면 null.
+ * 댓글 칸이 없는 페이지가 있으면 counts 는 null 이고 글번호만 남긴다.
+ */
+function naver_list_merge($bodies, $total) {
+    if (!is_array($bodies) || !is_int($total) || $total < 1) return null;
+    $seen = array();
+    $counts = array();
+    $times = array();
+    $fromList = true;
+    foreach ($bodies as $body) {
+        $ids = naver_list_log_nos($body);
+        if (!$ids) return null;
+        $pageCounts = naver_list_comment_counts($body);
+        if (!is_array($pageCounts)) $fromList = false;
+        $pageTimes = naver_post_times(is_string($body) ? $body : "", "");
+        foreach ($ids as $logNo) {
+            $logNo = (string) $logNo;
+            if (isset($seen[$logNo])) return null;
+            $seen[$logNo] = true;
+            if (isset($pageTimes[$logNo]) && is_string($pageTimes[$logNo])) $times[$logNo] = $pageTimes[$logNo];
+            if ($fromList && is_array($pageCounts) && array_key_exists($logNo, $pageCounts) && is_int($pageCounts[$logNo])) {
+                $counts[$logNo] = $pageCounts[$logNo];
+            } else {
+                $fromList = false;
+            }
+        }
+    }
+    if (count($seen) !== $total) return null;
+    return array(
+        "logNos" => array_keys($seen),
+        "counts" => ($fromList && count($counts) === $total) ? $counts : null,
+        "times" => $times
+    );
+}
+
+/**
+ * 방금 본 글을 뺀 저장분. 빠진 글이나 지워진 글이 있으면 null.
+ * $liveIds 는 이번 요청에서 직접 센 글번호다.
+ */
+function comment_store_rest($liveIds, $stored, $total) {
+    if (!is_array($liveIds) || !is_array($stored) || !is_int($total) || $total < 1) return null;
+    $live = array();
+    foreach ($liveIds as $id) {
+        $id = (string) $id;
+        if ($id === "" || isset($live[$id])) return null;
+        $live[$id] = true;
+    }
+    if (count($live) > $total) return null;
+    $rest = array();
+    foreach ($stored as $id => $count) {
+        $id = (string) $id;
+        if (isset($live[$id])) continue;
+        if (!is_int($count) || $count < 0) return null;
+        $rest[$id] = $count;
+    }
+    if (count($rest) !== $total - count($live)) return null;
+    return $rest;
+}
+
+function comment_store_sum($counts) {
+    if (!is_array($counts)) return null;
+    $sum = 0;
+    foreach ($counts as $count) {
+        if (!is_int($count) || $count < 0) return null;
+        $sum += $count;
+    }
+    return $sum;
+}
+
+/**
+ * 글마다 오늘 댓글이 하나라도 없으면 null.
+ */
+function comment_store_today_sum($ids, $today) {
+    if (!is_array($ids) || !is_array($today)) return null;
+    $sum = 0;
+    foreach ($ids as $id) {
+        $id = (string) $id;
+        if (!isset($today[$id]) || !is_int($today[$id]) || $today[$id] < 0) return null;
+        $sum += $today[$id];
+    }
+    return $sum;
+}
+
+/**
+ * 티스토리 글번호가 큰 것이 최근 글이다. $limit 개만 돌려준다.
+ */
+function tistory_newest_ids($ids, $limit) {
+    if (!is_array($ids) || !is_int($limit) || $limit < 1) return array();
+    $clean = array();
+    foreach ($ids as $id) {
+        $id = (string) $id;
+        if (!preg_match('/^\d{1,12}$/', $id) || isset($clean[$id])) continue;
+        $clean[$id] = (int) $id;
+    }
+    arsort($clean, SORT_NUMERIC);
+    $out = array();
+    foreach ($clean as $id => $number) {
+        $out[] = (string) $id;
+        if (count($out) >= $limit) break;
+    }
+    return $out;
+}
+
 function naver_comment_count($html) {
     if (preg_match('/commentCount="(\d+)"/', $html, $matched)) return (int) $matched[1];
     if (preg_match('/\\\\"commentCount\\\\"\s*:\s*(\d+)/', $html, $matched)) return (int) $matched[1];
@@ -410,6 +534,17 @@ function tistory_has_next_page($html, $page) {
     return (bool) preg_match('/(?:\?|&|\/)page=' . (int) ($page + 1) . '(?:["&\/\s]|$)/', $html);
 }
 
+/**
+ * 다음 티스토리 목록 페이지. 0이면 더 받지 않는다. 상한이면 null.
+ */
+function tistory_list_continue($page, $hasNext, $seen, $postTotal, $maxPages) {
+    if ($hasNext !== true) return 0;
+    if (is_int($postTotal) && $postTotal > 0 && is_int($seen) && $seen >= $postTotal) return 0;
+    if (!is_int($page) || !is_int($maxPages) || $page < 1 || $maxPages < 1) return null;
+    if ($page >= $maxPages) return null;
+    return $page + 1;
+}
+
 function tistory_comment_total($counts, $postTotal) {
     if (!$counts) return null;
     if (is_int($postTotal) && $postTotal > count($counts)) return null;
@@ -441,6 +576,7 @@ function blogger_published_min($now = null) {
 
 function blogger_feed_url($name, $kind, $min) {
     $path = $kind === "comments" ? "/feeds/comments/default" : "/feeds/posts/default";
+    // max-results=0 은 글을 나열하지 않고 피드가 가진 전체 개수만 받는다.
     $url = "https://" . $name . ".blogspot.com" . $path . "?alt=json&max-results=0";
     if (is_string($min) && $min !== "") $url .= "&published-min=" . rawurlencode($min);
     return $url;

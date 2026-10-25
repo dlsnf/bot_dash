@@ -6,6 +6,9 @@
  * view=counts 는 {"posts","comments","today","total","postsToday","commentsToday"} 를 돌려준다.
  * 값은 정수이거나 null이다. postsToday, commentsToday 는 한국시간 오늘 0시부터 올라온 개수다.
  * null 인 칸은 gaps 에 이유를 붙인다.
+ * 글이 20편을 넘으면 댓글은 data/comment_store.json 에 글마다 저장한다.
+ * 요청은 최근 20편만 다시 세고 나머지는 저장분을 쓴다. 저장이 없거나 글이 빠지면 그 요청에서 전체를 받아 저장한다.
+ * 저장이 10분보다 오래되면 응답을 보낸 뒤 전체를 다시 받아 고친다. 1페이지와 글 수가 맞지 않는 저장분은 쓰지 않는다.
  * Blogger 전체 페이지뷰는 계정 토큰이 있으면 API를, 없으면 공개 카운터를 쓴다.
  * 오늘 페이지뷰는 data/blogger_totals.json 의 어제 마감 전체를 지금 전체에서 뺀 값이다.
  * 마감은 대시보드 집계와 blogger_close.php 가 남긴다. 같은 날에는 더 큰 전체만 남긴다.
@@ -42,7 +45,14 @@ if (!defined("BOTDASH_PROFILE_LIBRARY")) {
 
 const BLOG_HTML_LIMIT = 500000;
 const IMAGE_LIMIT = 2000000;
-const COMMENT_CAP = 20;
+// 네이버 목록은 countPerPage 가 31 이상이면 글 5개만 돌려준다. 20개씩 다음 페이지를 이어 읽는다.
+const NAVER_LIST_PAGE_SIZE = 20;
+const NAVER_LIST_BATCH = 5;
+const TISTORY_LIST_MAX_PAGES = 30;
+const COMMENT_FETCH_ROUNDS = 15;
+const TISTORY_SITEMAP_MAX = 15;
+const TISTORY_COMMENT_BATCH = 20;
+const COMMENT_STORE_TTL = 600;
 
 function private_cache($seconds) {
     header_remove("Pragma");
@@ -406,12 +416,14 @@ function send_body($type, $body, $seconds) {
     header("Content-Type: " . $type);
     private_cache($seconds);
     header("X-Content-Type-Options: nosniff");
+    header("Content-Length: " . strlen($body));
     echo $body;
+    comment_store_run_queued();
     exit;
 }
 
 function clean_gaps($gaps) {
-    $allowed = array("cap20" => true, "cap40" => true, "page8" => true, "short" => true, "unread" => true, "more" => true, "alltime" => true);
+    $allowed = array("cap20" => true, "cap40" => true, "page8" => true, "short" => true, "unread" => true, "more" => true, "many" => true, "alltime" => true);
     $fields = array("posts", "comments", "today", "total", "postsToday", "commentsToday");
     $out = array();
     if (!is_array($gaps)) return $out;
@@ -517,7 +529,7 @@ function naver_comment_extras($blogId, $blogNo, $counts) {
         $pending[$logNo] = 1;
         $bags[$logNo] = array("pages" => array(), "done" => false);
     }
-    for ($round = 0; $round < 5 && $pending; $round++) {
+    for ($round = 0; $round < COMMENT_FETCH_ROUNDS && $pending; $round++) {
         $jobs = array();
         $order = array();
         foreach ($pending as $logNo => $page) {
@@ -601,9 +613,306 @@ function tistory_visitors($host, $fetched = null) {
     return array($today, $total);
 }
 
+function comment_store_path() {
+    return __DIR__ . "/data/comment_store.json";
+}
+
+function comment_store_key_ok($key) {
+    return is_string($key) && preg_match('/^(?:naver:[A-Za-z0-9_-]{1,40}|tistory:[a-z0-9.-]{1,80})$/', $key) === 1;
+}
+
+function comment_store_normalize($record) {
+    if (!is_array($record) || !isset($record["counts"]) || !is_array($record["counts"])) return null;
+    $counts = array();
+    foreach ($record["counts"] as $id => $count) {
+        $id = (string) $id;
+        if (!preg_match('/^\d{1,16}$/', $id) || !is_int($count) || $count < 0 || isset($counts[$id])) return null;
+        $counts[$id] = $count;
+    }
+    $today = array();
+    if (isset($record["today"]) && is_array($record["today"])) {
+        foreach ($record["today"] as $id => $count) {
+            $id = (string) $id;
+            if (!isset($counts[$id]) || !is_int($count) || $count < 0) continue;
+            $today[$id] = $count;
+        }
+    }
+    $savedAt = isset($record["savedAt"]) && is_int($record["savedAt"]) && $record["savedAt"] > 0 ? $record["savedAt"] : 0;
+    return array("savedAt" => $savedAt, "counts" => $counts, "today" => $today);
+}
+
+function comment_store_locked($write, $change) {
+    $path = comment_store_path();
+    $dir = dirname($path);
+    if (!is_dir($dir) || !is_writable($dir)) return null;
+    $fh = @fopen($path, "c+");
+    if (!$fh) return null;
+    if (!flock($fh, $write ? LOCK_EX : LOCK_SH)) {
+        fclose($fh);
+        return null;
+    }
+    $raw = stream_get_contents($fh);
+    $data = array();
+    if (is_string($raw) && $raw !== "") {
+        $decoded = json_decode($raw, true);
+        if (is_array($decoded)) $data = $decoded;
+    }
+    if ($write) {
+        $data = $change($data);
+        $json = is_array($data) ? json_encode($data, JSON_UNESCAPED_SLASHES) : false;
+        if (is_string($json)) {
+            rewind($fh);
+            if (ftruncate($fh, 0)) fwrite($fh, $json);
+            fflush($fh);
+            @chmod($path, 0600);
+        }
+        flock($fh, LOCK_UN);
+        fclose($fh);
+        return is_string($json);
+    }
+    $result = $change($data);
+    flock($fh, LOCK_UN);
+    fclose($fh);
+    return $result;
+}
+
+function comment_store_read($key) {
+    if (!comment_store_key_ok($key)) return null;
+    return comment_store_locked(false, function ($data) use ($key) {
+        if (!isset($data[$key]) || !is_array($data[$key])) return null;
+        return comment_store_normalize($data[$key]);
+    });
+}
+
+function comment_store_save($key, $record) {
+    $record = comment_store_normalize($record);
+    if (!comment_store_key_ok($key) || $record === null) return false;
+    $saved = comment_store_locked(true, function ($data) use ($key, $record) {
+        if (!is_array($data)) $data = array();
+        $data[$key] = $record;
+        return $data;
+    });
+    return $saved === true;
+}
+
+function comment_store_queue($key, $job) {
+    if (!comment_store_key_ok($key) || !is_callable($job)) return;
+    if (!isset($GLOBALS["BOTDASH_COMMENT_JOBS"]) || !is_array($GLOBALS["BOTDASH_COMMENT_JOBS"])) {
+        $GLOBALS["BOTDASH_COMMENT_JOBS"] = array();
+    }
+    $GLOBALS["BOTDASH_COMMENT_JOBS"][$key] = $job;
+}
+
+function comment_store_run_queued() {
+    $jobs = isset($GLOBALS["BOTDASH_COMMENT_JOBS"]) && is_array($GLOBALS["BOTDASH_COMMENT_JOBS"])
+        ? $GLOBALS["BOTDASH_COMMENT_JOBS"] : array();
+    $GLOBALS["BOTDASH_COMMENT_JOBS"] = array();
+    if (!$jobs) return;
+    ignore_user_abort(true);
+    @set_time_limit(0);
+    if (function_exists("fastcgi_finish_request")) @fastcgi_finish_request();
+    else {
+        while (ob_get_level() > 0) @ob_end_flush();
+        @flush();
+    }
+    foreach ($jobs as $job) $job();
+}
+
+function naver_list_job($id, $page) {
+    return array(
+        "url" => "https://blog.naver.com/PostTitleListAsync.naver?blogId=" . rawurlencode($id)
+            . "&currentPage=" . (int) $page
+            . "&countPerPage=" . NAVER_LIST_PAGE_SIZE,
+        "limit" => BLOG_HTML_LIMIT,
+        "allow" => "naver_host_ok",
+        "headers" => array("Referer: https://blog.naver.com/" . rawurlencode($id)),
+        "reject" => true,
+        "timeout" => 6,
+        "decode" => true
+    );
+}
+
+function naver_apply_comments($id, $blogNo, $pageCounts, $postTimes, $htmlFresh) {
+    if (!is_array($pageCounts)) return null;
+    $extras = naver_comment_extras($id, $blogNo, $pageCounts);
+    $final = array();
+    $todays = array();
+    $sum = 0;
+    $commentsToday = 0;
+    $known = true;
+    foreach ($pageCounts as $logNo => $count) {
+        $logNo = (string) $logNo;
+        if (!preg_match('/^\d{1,16}$/', $logNo) || !is_int($count) || $count < 0) return null;
+        if (isset($extras[$logNo]) && is_int($extras[$logNo]["total"]) && $extras[$logNo]["total"] > $count) {
+            $count = $extras[$logNo]["total"];
+        }
+        $final[$logNo] = $count;
+        $sum += $count;
+        if ($count === 0) {
+            $todays[$logNo] = 0;
+            continue;
+        }
+        $fresh = null;
+        if (isset($extras[$logNo]) && is_int($extras[$logNo]["today"])) $fresh = $extras[$logNo]["today"];
+        if ($fresh === null && is_array($htmlFresh) && array_key_exists($logNo, $htmlFresh)) $fresh = $htmlFresh[$logNo];
+        if ($fresh === null) {
+            $postRaw = is_array($postTimes) && isset($postTimes[$logNo]) ? $postTimes[$logNo] : "";
+            $fresh = comments_on_fresh_post($postRaw, $count);
+        }
+        if (!is_int($fresh)) {
+            $known = false;
+            continue;
+        }
+        $todays[$logNo] = $fresh;
+        $commentsToday += $fresh;
+    }
+    return array(
+        "sum" => $sum,
+        "today" => $known ? $commentsToday : null,
+        "counts" => $final,
+        "todays" => $todays,
+        "known" => $known
+    );
+}
+
+function naver_fetch_list_bodies($id, $firstBody, $pagesNeeded) {
+    $bodies = array($firstBody);
+    for ($from = 2; $from <= $pagesNeeded; $from += NAVER_LIST_BATCH) {
+        $to = $from + NAVER_LIST_BATCH - 1;
+        if ($to > $pagesNeeded) $to = $pagesNeeded;
+        $jobs = array();
+        for ($page = $from; $page <= $to; $page++) $jobs[] = naver_list_job($id, $page);
+        foreach (fetch_urls($jobs) as $pageResult) {
+            if ($pageResult[0] !== 200 || $pageResult[1] === "") return null;
+            $bodies[] = $pageResult[1];
+        }
+    }
+    return $bodies;
+}
+
+function naver_load_comments($id, $blogNo, $firstBody, $rssXml) {
+    if (!preg_match('/"totalCount"\s*:\s*"?(\d+)/', (string) $firstBody, $totalMatch)) return array("error" => "unread");
+    $total = (int) $totalMatch[1];
+    if ($total === 0) {
+        return array("total" => 0, "sum" => 0, "today" => 0, "counts" => array(), "todays" => array(), "known" => true);
+    }
+    $pagesNeeded = naver_list_page_count($total, NAVER_LIST_PAGE_SIZE, 0);
+    if (!is_int($pagesNeeded) || $pagesNeeded < 1) return array("error" => "unread");
+    $bodies = naver_fetch_list_bodies($id, $firstBody, $pagesNeeded);
+    if (!is_array($bodies)) return array("error" => "unread");
+    $merged = naver_list_merge($bodies, $total);
+    if ($merged === null) return array("error" => "short");
+    $logNos = $merged["logNos"];
+    $postTimes = $merged["times"];
+    if (is_string($rssXml) && $rssXml !== "") {
+        foreach (naver_post_times("", $rssXml) as $logNo => $raw) $postTimes[$logNo] = $raw;
+    }
+    $pageCounts = $merged["counts"];
+    $htmlFresh = array();
+    if (!is_array($pageCounts)) {
+        $pageCounts = array();
+        $jobs = array();
+        foreach ($logNos as $logNo) {
+            $jobs[] = array(
+                "url" => "https://m.blog.naver.com/" . rawurlencode($id) . "/" . rawurlencode($logNo),
+                "limit" => BLOG_HTML_LIMIT,
+                "allow" => "naver_host_ok",
+                "headers" => array(),
+                "reject" => true,
+                "timeout" => 6,
+                "decode" => true
+            );
+        }
+        foreach (fetch_urls($jobs) as $index => $page) {
+            list($pageStatus, $html) = $page;
+            $count = naver_comment_count($html);
+            if ($pageStatus !== 200 || $count === null) return array("error" => "unread");
+            $logNo = (string) $logNos[$index];
+            $pageCounts[$logNo] = $count;
+            if ($count === 0) continue;
+            $postRaw = isset($postTimes[$logNo]) ? $postTimes[$logNo] : "";
+            $fresh = comments_on_fresh_post($postRaw, $count);
+            if ($fresh === null) {
+                $fresh = count_days($html, '/"(?:regTime|commentDate|registeredDate)"\s*:\s*"([^"]+)"/');
+                if ($fresh === null) $fresh = count_days($html, '/u_cbox_date[^>]*>\s*([^<]{6,40})</i');
+            }
+            $htmlFresh[$logNo] = $fresh;
+        }
+    }
+    $applied = naver_apply_comments($id, $blogNo, $pageCounts, $postTimes, $htmlFresh);
+    if ($applied === null) return array("error" => "unread");
+    $applied["total"] = $total;
+    return $applied;
+}
+
+function naver_save_comments($id, $counts, $todays, $savedAt) {
+    comment_store_save("naver:" . $id, array(
+        "savedAt" => $savedAt,
+        "counts" => $counts,
+        "today" => $todays
+    ));
+}
+
+function naver_refresh_comments($id) {
+    $job = naver_list_job($id, 1);
+    list($status, $body) = fetch_url(
+        $job["url"],
+        $job["limit"],
+        $job["allow"],
+        $job["headers"],
+        !empty($job["reject"]),
+        $job["timeout"],
+        !empty($job["decode"])
+    );
+    if ($status !== 200 || $body === "") return;
+    list($infoStatus, $infoBody) = fetch_url(
+        "https://m.blog.naver.com/api/blogs/" . rawurlencode($id),
+        BLOG_HTML_LIMIT,
+        "naver_host_ok",
+        array("Referer: https://m.blog.naver.com/" . rawurlencode($id)),
+        true,
+        6,
+        true
+    );
+    $loaded = naver_load_comments($id, naver_blog_no($infoStatus, $infoBody), $body, "");
+    if (!is_array($loaded) || isset($loaded["error"]) || !isset($loaded["counts"])) return;
+    naver_save_comments($id, $loaded["counts"], $loaded["todays"], time());
+}
+
+function naver_comments_saved($id, $blogNo, $firstBody, $rssXml) {
+    if (!preg_match('/"totalCount"\s*:\s*"?(\d+)/', (string) $firstBody, $totalMatch)) return null;
+    $total = (int) $totalMatch[1];
+    if ($total <= NAVER_LIST_PAGE_SIZE) return null;
+    $head = naver_list_comment_counts($firstBody);
+    if (!is_array($head)) return null;
+    $stored = comment_store_read("naver:" . $id);
+    if (!is_array($stored)) return null;
+    $rest = comment_store_rest(array_keys($head), $stored["counts"], $total);
+    if (!is_array($rest)) return null;
+    $headTimes = naver_post_times($firstBody, is_string($rssXml) ? $rssXml : "");
+    $applied = naver_apply_comments($id, $blogNo, $head, $headTimes, array());
+    if (!is_array($applied)) return null;
+    $olderSum = comment_store_sum($rest);
+    if (!is_int($olderSum)) return null;
+    $olderToday = comment_store_today_sum(array_keys($rest), $stored["today"]);
+    $today = ($applied["known"] && is_int($olderToday) && is_int($applied["today"])) ? $applied["today"] + $olderToday : null;
+    $counts = $rest;
+    foreach ($applied["counts"] as $logNo => $count) $counts[$logNo] = $count;
+    $todays = array();
+    foreach ($counts as $logNo => $count) {
+        if (isset($applied["todays"][$logNo])) $todays[$logNo] = $applied["todays"][$logNo];
+        elseif (isset($stored["today"][$logNo]) && is_int($stored["today"][$logNo])) $todays[$logNo] = $stored["today"][$logNo];
+    }
+    naver_save_comments($id, $counts, $todays, $stored["savedAt"]);
+    if (!is_int($stored["savedAt"]) || $stored["savedAt"] < time() - COMMENT_STORE_TTL) {
+        comment_store_queue("naver:" . $id, function () use ($id) {
+            naver_refresh_comments($id);
+        });
+    }
+    return array("sum" => $applied["sum"] + $olderSum, "today" => $today, "known" => is_int($today));
+}
+
 function naver_counts($id) {
-    $listUrl = "https://blog.naver.com/PostTitleListAsync.naver?blogId=" . rawurlencode($id)
-        . "&currentPage=1&countPerPage=" . COMMENT_CAP;
     $rssAllow = function ($url) use ($id) {
         if (host_of($url) !== "rss.blog.naver.com") return false;
         $path = parse_url($url, PHP_URL_PATH);
@@ -611,15 +920,7 @@ function naver_counts($id) {
     };
     // 목록, RSS, 방문자 수는 서로 기다릴 필요가 없다.
     $wave = fetch_urls(array(
-        array(
-            "url" => $listUrl,
-            "limit" => BLOG_HTML_LIMIT,
-            "allow" => "naver_host_ok",
-            "headers" => array("Referer: https://blog.naver.com/" . rawurlencode($id)),
-            "reject" => true,
-            "timeout" => 6,
-            "decode" => true
-        ),
+        naver_list_job($id, 1),
         array(
             "url" => "https://rss.blog.naver.com/" . rawurlencode($id) . ".xml",
             "limit" => BLOG_HTML_LIMIT,
@@ -649,116 +950,39 @@ function naver_counts($id) {
     // 목록의 "5분 전"은 화면 문구라서 빠질 수 있다. RSS 발행 시각이 있으면 한국시간 오늘을 센다.
     $postsToday = ($rssStatus === 200 && $xml !== "") ? rss_posts_on_day($xml) : null;
     if ($postsToday === null) $postsToday = count_days($body, '/"addDate"\s*:\s*"([^"]+)"/');
-    $postTimes = naver_post_times($body, ($rssStatus === 200 && $xml !== "") ? $xml : "");
     $total = (int) $totalMatch[1];
     if ($total === 0) return naver_count_row(0, 0, $visitors[0], $visitors[1], 0, 0, array());
-    // 글이 상한보다 많으면 일부 댓글만 더해 전체인 것처럼 보여 주지 않는다.
-    if ($total > COMMENT_CAP) {
+    $rssXml = ($rssStatus === 200 && $xml !== "") ? $xml : "";
+    // 20편을 넘으면 최근 목록만 다시 세고, 나머지는 저장분이 글 수와 맞을 때만 더한다.
+    $saved = naver_comments_saved($id, $blogNo, $body, $rssXml);
+    if (is_array($saved)) {
+        return naver_count_row(
+            $total,
+            $saved["sum"],
+            $visitors[0],
+            $visitors[1],
+            $postsToday,
+            $saved["today"],
+            $saved["known"] ? array() : array("commentsToday" => "")
+        );
+    }
+    $loaded = naver_load_comments($id, $blogNo, $body, $rssXml);
+    if (!is_array($loaded) || isset($loaded["error"])) {
+        $gap = (is_array($loaded) && isset($loaded["error"])) ? $loaded["error"] : "unread";
         return naver_count_row($total, null, $visitors[0], $visitors[1], $postsToday, null, array(
-            "comments" => "cap20",
-            "commentsToday" => "cap20"
+            "comments" => $gap,
+            "commentsToday" => $gap
         ));
     }
-    if (!preg_match_all('/"logNo"\s*:\s*"(\d+)"/', $body, $logMatch)) {
-        return naver_count_row($total, null, $visitors[0], $visitors[1], $postsToday, null, array(
-            "comments" => "short",
-            "commentsToday" => "short"
-        ));
-    }
-    $logNos = array_values(array_unique($logMatch[1]));
-    if (count($logNos) !== $total) {
-        return naver_count_row($total, null, $visitors[0], $visitors[1], $postsToday, null, array(
-            "comments" => "short",
-            "commentsToday" => "short"
-        ));
-    }
-    // 목록에 댓글 수가 있으면 글 페이지를 글마다 다시 받지 않는다.
-    // 그 페이지가 하나라도 막히면 합계 전체가 비었다.
-    $pageCounts = naver_list_comment_counts($body);
-    $fromList = is_array($pageCounts);
-    if ($fromList) {
-        foreach ($logNos as $logNo) {
-            if (!array_key_exists($logNo, $pageCounts)) { $fromList = false; break; }
-        }
-    }
-    $htmlFresh = array();
-    if (!$fromList) {
-        $pageCounts = array();
-        $jobs = array();
-        foreach ($logNos as $logNo) {
-            $jobs[] = array(
-                "url" => "https://m.blog.naver.com/" . rawurlencode($id) . "/" . rawurlencode($logNo),
-                "limit" => BLOG_HTML_LIMIT,
-                "allow" => "naver_host_ok",
-                "headers" => array(),
-                "reject" => true,
-                "timeout" => 6,
-                "decode" => true
-            );
-        }
-        $pages = fetch_urls($jobs);
-        foreach ($pages as $index => $page) {
-            list($pageStatus, $html) = $page;
-            $count = naver_comment_count($html);
-            if ($pageStatus !== 200 || $count === null) {
-                return naver_count_row($total, null, $visitors[0], $visitors[1], $postsToday, null, array(
-                    "comments" => "unread",
-                    "commentsToday" => "unread"
-                ));
-            }
-            $logNo = $logNos[$index];
-            $pageCounts[$logNo] = $count;
-            if ($count === 0) continue;
-            $postRaw = isset($postTimes[$logNo]) ? $postTimes[$logNo] : "";
-            $fresh = comments_on_fresh_post($postRaw, $count);
-            if ($fresh === null) {
-                $fresh = count_days($html, '/"(?:regTime|commentDate|registeredDate)"\s*:\s*"([^"]+)"/');
-                if ($fresh === null) {
-                    $fresh = count_days($html, '/u_cbox_date[^>]*>\s*([^<]{6,40})</i');
-                }
-            }
-            $htmlFresh[$logNo] = $fresh;
-        }
-    }
-    $sum = 0;
-    foreach ($pageCounts as $logNo => $count) {
-        if (!in_array((string) $logNo, $logNos, true)) continue;
-        $sum += $count;
-    }
-    // 글 페이지 숫자에 주인 댓글이 빠져 있으면 댓글 목록의 더 큰 합으로 올린다.
-    $extras = naver_comment_extras($id, $blogNo, $pageCounts);
-    $commentsToday = 0;
-    $commentsKnown = true;
-    foreach ($pageCounts as $logNo => $count) {
-        if (!in_array((string) $logNo, $logNos, true)) continue;
-        if (isset($extras[$logNo]) && is_int($extras[$logNo]["total"]) && $extras[$logNo]["total"] > $count) {
-            $sum += $extras[$logNo]["total"] - $count;
-            $count = $extras[$logNo]["total"];
-        }
-        if ($count === 0) continue;
-        if (isset($extras[$logNo]) && is_int($extras[$logNo]["today"])) {
-            $commentsToday += $extras[$logNo]["today"];
-            continue;
-        }
-        $fresh = array_key_exists($logNo, $htmlFresh) ? $htmlFresh[$logNo] : null;
-        if ($fresh === null) {
-            $postRaw = isset($postTimes[$logNo]) ? $postTimes[$logNo] : "";
-            $fresh = comments_on_fresh_post($postRaw, $count);
-        }
-        if ($fresh === null) {
-            $commentsKnown = false;
-            continue;
-        }
-        $commentsToday += $fresh;
-    }
+    naver_save_comments($id, $loaded["counts"], $loaded["todays"], time());
     return naver_count_row(
         $total,
-        $sum,
+        $loaded["sum"],
         $visitors[0],
         $visitors[1],
         $postsToday,
-        $commentsKnown ? $commentsToday : null,
-        $commentsKnown ? array() : array("commentsToday" => "")
+        $loaded["today"],
+        $loaded["known"] ? array() : array("commentsToday" => "")
     );
 }
 
@@ -805,11 +1029,22 @@ function tistory_comments($host, $postTotal, $fetched = null) {
     $added = tistory_comment_page($html, $counts);
     if ($added === null) return array(null, "unread", array());
     $stop = null;
-    if ($added > 0 && tistory_has_next_page($html, 1)) {
+    $page = 1;
+    $postGoal = is_int($postTotal) ? $postTotal : null;
+    while ($added > 0) {
+        $next = tistory_list_continue($page, tistory_has_next_page($html, $page), count($counts), $postGoal, TISTORY_LIST_MAX_PAGES);
+        if ($next === 0) break;
+        if ($next === null) {
+            $stop = "many";
+            break;
+        }
+        $from = $next;
+        $to = $from + 6;
+        if ($to > TISTORY_LIST_MAX_PAGES) $to = TISTORY_LIST_MAX_PAGES;
         $jobs = array();
-        for ($page = 2; $page <= 8; $page++) {
+        for ($n = $from; $n <= $to; $n++) {
             $jobs[] = array(
-                "url" => "https://" . $host . "/?page=" . $page,
+                "url" => "https://" . $host . "/?page=" . $n,
                 "limit" => BLOG_HTML_LIMIT,
                 "allow" => $allow,
                 "headers" => array(),
@@ -819,33 +1054,44 @@ function tistory_comments($host, $postTotal, $fetched = null) {
                 "ua" => $browser
             );
         }
-        $pages = fetch_urls($jobs);
-        foreach ($pages as $index => $pageResult) {
-            $page = $index + 2;
+        $halt = false;
+        foreach (fetch_urls($jobs) as $index => $pageResult) {
+            $page = $from + $index;
             $status = $pageResult[0];
             $html = $pageResult[1];
             if ($status !== 200 || $html === "") {
                 $stop = "unread";
+                $halt = true;
                 break;
             }
             $added = tistory_comment_page($html, $counts);
             if ($added === null) {
                 $stop = "unread";
+                $halt = true;
                 break;
             }
             if ($added === 0) {
                 $stop = "short";
+                $halt = true;
                 break;
             }
-            if (!tistory_has_next_page($html, $page)) break;
-            if ($page === 8) {
-                $stop = "page8";
+            $step = tistory_list_continue($page, tistory_has_next_page($html, $page), count($counts), $postGoal, TISTORY_LIST_MAX_PAGES);
+            if ($step === 0) {
+                $halt = true;
+                break;
+            }
+            if ($step === null) {
+                $stop = "many";
+                $halt = true;
                 break;
             }
         }
+        if ($halt) break;
     }
+    // 상한에서 끊긴 목록은 전체처럼 보이지 않게 비운다.
+    if ($stop === "many") return array(null, "many", $counts);
     // 글 수보다 적게 보면 합이 전체인 것처럼 보이지 않게 비운다.
-    $sum = tistory_comment_total($counts, is_int($postTotal) ? $postTotal : null);
+    $sum = tistory_comment_total($counts, $postGoal);
     if ($sum === null) return array(null, $stop ? $stop : "short", array());
     return array($sum, null, $counts);
 }
@@ -902,7 +1148,7 @@ function tistory_posts($host, $fetched = null, &$ids = null) {
     $seen = array();
     if (stripos($xml, "<sitemapindex") !== false) {
         if (!preg_match_all('#<loc>\s*([^<]+)\s*</loc>#i', $xml, $children)) return $fail();
-        if (count($children[1]) > 4) return $fail();
+        if (count($children[1]) > TISTORY_SITEMAP_MAX) return $fail();
         $jobs = array();
         foreach ($children[1] as $child) {
             $child = trim(html_entity_decode($child, ENT_QUOTES, "UTF-8"));
@@ -945,56 +1191,130 @@ function tistory_comment_allow($host) {
     };
 }
 
-function tistory_comments_today($host, $ids) {
+function tistory_comment_key($host) {
+    return "tistory:" . strtolower((string) $host);
+}
+
+function tistory_comment_fetch($host, $ids) {
     $full = array();
-    if (!is_array($ids) || !$ids) return array(null, "unread", $full);
-    if (count($ids) > 40) return array(null, "cap40", $full);
+    $todayBy = array();
+    if (!is_array($ids) || !$ids) return array(null, "unread", $full, $todayBy);
     $allow = tistory_comment_allow($host);
     $pending = array();
     foreach ($ids as $id) {
         $id = (string) $id;
-        if (!preg_match('/^\d{1,12}$/', $id)) return array(null, "unread", $full);
+        if (!preg_match('/^\d{1,12}$/', $id)) return array(null, "unread", $full, $todayBy);
         $pending[$id] = "";
     }
     $total = 0;
     $running = array();
-    for ($round = 0; $round < 5 && $pending; $round++) {
-        $jobs = array();
-        $order = array();
-        foreach ($pending as $id => $start) {
-            $url = "https://" . $host . "/m/api/" . $id . "/comment";
-            if ($start !== "") $url .= "?startId=" . rawurlencode($start);
-            $jobs[] = array(
-                "url" => $url,
-                "limit" => BLOG_HTML_LIMIT,
-                "allow" => $allow,
-                "headers" => array("Accept: application/json"),
-                "reject" => true,
-                "timeout" => 6,
-                "decode" => true,
-                "ua" => tistory_browser()
-            );
-            $order[] = $id;
-        }
+    for ($round = 0; $round < COMMENT_FETCH_ROUNDS && $pending; $round++) {
         $next = array();
-        foreach (fetch_urls($jobs) as $index => $page) {
-            $id = $order[$index];
-            if ($page[0] !== 200 || $page[1] === "") return array(null, "unread", $full);
-            $census = tistory_comment_census($page[1]);
-            if ($census === null) return array(null, "unread", $full);
-            $running[$id] = (isset($running[$id]) ? $running[$id] : 0) + $census["nodes"];
-            if ($census["isLast"]) $full[$id] = $running[$id];
-            if ($census["today"] === null) return array(null, "unread", $full);
-            $total += $census["today"];
-            if ($census["isLast"]) continue;
-            $start = $census["next"];
-            if (!is_string($start) || isset($next[$id])) return array(null, "unread", $full);
-            $next[$id] = $start;
+        $idsNow = array_keys($pending);
+        $countNow = count($idsNow);
+        for ($offset = 0; $offset < $countNow; $offset += TISTORY_COMMENT_BATCH) {
+            $slice = array_slice($idsNow, $offset, TISTORY_COMMENT_BATCH);
+            $jobs = array();
+            foreach ($slice as $id) {
+                $url = "https://" . $host . "/m/api/" . $id . "/comment";
+                if ($pending[$id] !== "") $url .= "?startId=" . rawurlencode($pending[$id]);
+                $jobs[] = array(
+                    "url" => $url,
+                    "limit" => BLOG_HTML_LIMIT,
+                    "allow" => $allow,
+                    "headers" => array("Accept: application/json"),
+                    "reject" => true,
+                    "timeout" => 6,
+                    "decode" => true,
+                    "ua" => tistory_browser()
+                );
+            }
+            foreach (fetch_urls($jobs) as $index => $page) {
+                $id = $slice[$index];
+                if ($page[0] !== 200 || $page[1] === "") return array(null, "unread", $full, $todayBy);
+                $census = tistory_comment_census($page[1]);
+                if ($census === null) return array(null, "unread", $full, $todayBy);
+                $running[$id] = (isset($running[$id]) ? $running[$id] : 0) + $census["nodes"];
+                if ($census["today"] === null) return array(null, "unread", $full, $todayBy);
+                $todayBy[$id] = (isset($todayBy[$id]) ? $todayBy[$id] : 0) + $census["today"];
+                $total += $census["today"];
+                if ($census["isLast"]) {
+                    $full[$id] = $running[$id];
+                    if (!isset($todayBy[$id])) $todayBy[$id] = 0;
+                    continue;
+                }
+                $start = $census["next"];
+                if (!is_string($start) || isset($next[$id])) return array(null, "unread", $full, $todayBy);
+                $next[$id] = $start;
+            }
         }
         $pending = $next;
     }
-    if ($pending) return array(null, "more", $full);
-    return array($total, null, $full);
+    if ($pending) return array(null, "more", $full, $todayBy);
+    return array($total, null, $full, $todayBy);
+}
+
+function tistory_save_comments($host, $counts, $todays, $savedAt) {
+    comment_store_save(tistory_comment_key($host), array(
+        "savedAt" => $savedAt,
+        "counts" => $counts,
+        "today" => $todays
+    ));
+}
+
+function tistory_refresh_comments($host) {
+    $ids = array();
+    $posts = tistory_posts($host, null, $ids);
+    if (!is_int($posts) || !$ids) return;
+    $fetched = tistory_comment_fetch($host, $ids);
+    if (!is_array($fetched) || $fetched[1] !== null || !is_array($fetched[2])) return;
+    if (count($fetched[2]) !== count($ids)) return;
+    $todays = isset($fetched[3]) && is_array($fetched[3]) ? $fetched[3] : array();
+    tistory_save_comments($host, $fetched[2], $todays, time());
+}
+
+function tistory_comments_today($host, $ids) {
+    $full = array();
+    if (!is_array($ids) || !$ids) return array(null, "unread", $full);
+    $key = tistory_comment_key($host);
+    if (count($ids) > NAVER_LIST_PAGE_SIZE && comment_store_key_ok($key)) {
+        $stored = comment_store_read($key);
+        $head = tistory_newest_ids($ids, NAVER_LIST_PAGE_SIZE);
+        $rest = is_array($stored) ? comment_store_rest($head, $stored["counts"], count($ids)) : null;
+        if (is_array($rest) && count($head) === NAVER_LIST_PAGE_SIZE) {
+            $headFetch = tistory_comment_fetch($host, $head);
+            if (is_array($headFetch) && $headFetch[1] === null && is_array($headFetch[2]) && count($headFetch[2]) === count($head)) {
+                $olderSum = comment_store_sum($rest);
+                $headSum = comment_store_sum($headFetch[2]);
+                if (is_int($olderSum) && is_int($headSum)) {
+                    $merged = $rest;
+                    foreach ($headFetch[2] as $id => $count) $merged[$id] = $count;
+                    $headToday = isset($headFetch[3]) && is_array($headFetch[3]) ? $headFetch[3] : array();
+                    $todays = array();
+                    foreach ($merged as $id => $count) {
+                        if (isset($headToday[$id]) && is_int($headToday[$id])) $todays[$id] = $headToday[$id];
+                        elseif (isset($stored["today"][$id]) && is_int($stored["today"][$id])) $todays[$id] = $stored["today"][$id];
+                    }
+                    tistory_save_comments($host, $merged, $todays, $stored["savedAt"]);
+                    if (!is_int($stored["savedAt"]) || $stored["savedAt"] < time() - COMMENT_STORE_TTL) {
+                        comment_store_queue($key, function () use ($host) {
+                            tistory_refresh_comments($host);
+                        });
+                    }
+                    $olderToday = comment_store_today_sum(array_keys($rest), $stored["today"]);
+                    $today = (is_int($headFetch[0]) && is_int($olderToday)) ? $headFetch[0] + $olderToday : null;
+                    return array($today, $today === null ? "unread" : null, $merged);
+                }
+            }
+        }
+    }
+    $fetched = tistory_comment_fetch($host, $ids);
+    if (!is_array($fetched)) return array(null, "unread", $full);
+    if ($fetched[1] === null && is_array($fetched[2]) && count($fetched[2]) === count($ids)) {
+        $todays = isset($fetched[3]) && is_array($fetched[3]) ? $fetched[3] : array();
+        tistory_save_comments($host, $fetched[2], $todays, time());
+    }
+    return array($fetched[0], $fetched[1], is_array($fetched[2]) ? $fetched[2] : $full);
 }
 
 function tistory_live($host) {

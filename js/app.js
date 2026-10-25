@@ -42,6 +42,7 @@
     short: "목록이 부족",
     unread: "못 읽음",
     more: "댓글이 더 있음",
+    many: "글이 너무 많음",
     alltime: "일별 없음"
   };
   var SECRET_KEYS = { password: 1, passwd: 1, pwd: 1, secret: 1, token: 1 };
