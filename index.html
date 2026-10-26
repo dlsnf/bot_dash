@@ -38,7 +38,7 @@
     })();
   </script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" integrity="sha384-PPIZEGYM1v8zp5Py7UjFb79S58UeqCL9pYVnVPURKEqvioPROaVAJKKLzvH2rDnI" crossorigin="anonymous">
-  <link rel="stylesheet" href="css/style.css?v=21">
+  <link rel="stylesheet" href="css/style.css?v=24">
 </head>
 <body data-page="dashboard" class="is-booting">
   <a class="skip" href="#cards">캐릭터 목록으로 건너뛰기</a>
@@ -184,6 +184,26 @@
           </div>
           <p id="totalChartEmpty" class="chart-empty" hidden></p>
         </div>
+        <div class="chart-card">
+          <div class="chart-head">
+            <h2 id="shareChartTitle">전체 방문자 비중</h2>
+            <p id="shareChartNote">캐릭터별 전체 방문자 비중입니다. 검색과 관계없이 읽힌 전체를 나눕니다.</p>
+          </div>
+          <div class="chart-wrap is-share" id="shareChartWrap">
+            <canvas id="shareChart" aria-hidden="true"></canvas>
+          </div>
+          <p id="shareChartEmpty" class="chart-empty" hidden></p>
+        </div>
+        <div class="chart-card">
+          <div class="chart-head">
+            <h2 id="monthChartTitle">이번 달 방문자</h2>
+            <p>어제까지는 한국시간 23:50 마감입니다. 오늘은 지금까지의 값이라 점선입니다. 읽지 못한 날은 선이 끊깁니다.</p>
+          </div>
+          <div class="chart-wrap is-month" id="monthChartWrap">
+            <canvas id="monthChart" aria-hidden="true"></canvas>
+          </div>
+          <p id="monthChartEmpty" class="chart-empty" hidden></p>
+        </div>
         <div id="statsTable"></div>
       </section>
     </div>
@@ -207,8 +227,8 @@
   <script src="js/config.js"></script>
   <script src="js/parser.js"></script>
   <script src="js/reel.js"></script>
-  <script src="js/chart.js?v=7"></script>
+  <script src="js/chart.js?v=10"></script>
   <script src="js/login.js?v=2"></script>
-  <script src="js/app.js?v=25"></script>
+  <script src="js/app.js?v=27"></script>
 </body>
 </html>

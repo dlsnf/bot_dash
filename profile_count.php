@@ -844,6 +844,94 @@ function blogger_close_urls_from($markdown) {
     return $keys;
 }
 
+/**
+ * 대시보드 countableBlogUrl 과 같은 집계 주소.
+ * 네이버·티스토리·블로거만 남기고, 루트는 슬래시로 끝낸다.
+ */
+function visitor_blog_url($raw) {
+    $raw = rtrim(trim((string) $raw), "),.]");
+    $parts = parse_url($raw);
+    if (!is_array($parts)) return "";
+    if (empty($parts["scheme"]) || strtolower($parts["scheme"]) !== "https") return "";
+    if (!empty($parts["user"]) || !empty($parts["pass"])) return "";
+    if (isset($parts["port"]) && (int) $parts["port"] !== 443) return "";
+    $host = strtolower(isset($parts["host"]) ? $parts["host"] : "");
+    $naver = $host === "blog.naver.com" || $host === "m.blog.naver.com";
+    $tistory = preg_match('/^[a-z0-9-]+\.tistory\.com$/', $host) === 1;
+    $blogger = blogspot_name($host) !== "";
+    if (!$naver && !$tistory && !$blogger) return "";
+    $path = isset($parts["path"]) && $parts["path"] !== "" ? $parts["path"] : "/";
+    if (strlen($path) > 1) $path = rtrim($path, "/");
+    if ($path === "") $path = "/";
+    $query = isset($parts["query"]) && $parts["query"] !== "" ? "?" . $parts["query"] : "";
+    return "https://" . $host . $path . $query;
+}
+
+function visitor_urls_from($markdown) {
+    $urls = array();
+    if (!is_string($markdown) || $markdown === "") return array();
+    if (!preg_match_all('#https?://[^\s<>"\']+#i', $markdown, $matches)) return array();
+    foreach ($matches[0] as $raw) {
+        $url = visitor_blog_url($raw);
+        if ($url !== "") $urls[$url] = true;
+    }
+    $keys = array_keys($urls);
+    sort($keys, SORT_STRING);
+    return $keys;
+}
+
+/**
+ * 그 서울 날짜의 오늘 방문자를 남긴다.
+ * 지난 날짜는 고치지 않고, 같은 날에는 더 큰 값만 남긴다.
+ * 오늘로부터 400일보다 오래된 칸은 뺀다.
+ */
+function visitor_day_apply($data, $blog, $day, $count, $now = null) {
+    if (!is_array($data)) $data = array();
+    if (!is_string($blog) || $blog === "" || !is_int($count) || $count < 0) return $data;
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $day)) return $data;
+    $clock = seoul_clock($now);
+    if ($day !== $clock->format("Y-m-d")) return $data;
+    if (!isset($data[$day]) || !is_array($data[$day])) $data[$day] = array();
+    $previous = isset($data[$day][$blog]) ? $data[$day][$blog] : null;
+    if (is_string($previous) && preg_match('/^\d{1,12}$/', $previous)) $previous = (int) $previous;
+    if (is_int($previous) && $previous > $count) $count = $previous;
+    $data[$day][$blog] = $count;
+    $cutoff = clone $clock;
+    $cutoff->modify("-400 days");
+    $cutoffKey = $cutoff->format("Y-m-d");
+    $kept = array();
+    foreach ($data as $key => $row) {
+        if (!is_string($key) || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $key) || $key < $cutoffKey) continue;
+        if (!is_array($row)) continue;
+        $clean = array();
+        foreach ($row as $url => $value) {
+            if (!is_string($url) || $url === "") continue;
+            if (is_int($value) && $value >= 0) $clean[$url] = $value;
+            elseif (is_string($value) && preg_match('/^\d{1,12}$/', $value)) $clean[$url] = (int) $value;
+        }
+        if ($clean) $kept[$key] = $clean;
+    }
+    ksort($kept);
+    return $kept;
+}
+
+/**
+ * 캐릭터의 그날 합. 블로그가 하나도 없거나 하나라도 숫자가 없으면 null.
+ * 0은 방문자가 없는 날이라 합에 넣는다.
+ */
+function visitor_day_total($row, $urls) {
+    if (!is_array($urls) || count($urls) === 0 || !is_array($row)) return null;
+    $sum = 0;
+    foreach ($urls as $url) {
+        if (!is_string($url) || $url === "" || !array_key_exists($url, $row)) return null;
+        $value = $row[$url];
+        if (is_string($value) && preg_match('/^\d{1,12}$/', $value)) $value = (int) $value;
+        if (!is_int($value) || $value < 0) return null;
+        $sum += $value;
+    }
+    return $sum;
+}
+
 function blogger_apply_character_blogs($sets, $bySuffix) {
     if (!is_array($sets)) return array();
     if (!is_array($bySuffix)) $bySuffix = array();

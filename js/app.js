@@ -1,7 +1,7 @@
 /**
  * 봇대시 화면 로직.
  * 숫자 릴은 js/reel.js, 통계 그래프는 js/chart.js, 로그인은 js/login.js 에 있다.
- * 캐릭터 원본은 서버에서 만들지 않고, 로그인한 브라우저가 content.php 로 characters 폴더의 md와 stats.json을 읽어 그린다.
+ * 캐릭터 원본은 서버에서 만들지 않고, 로그인한 브라우저가 content.php 로 characters 폴더의 md와 stats.json, visitor_days.json을 읽어 그린다.
  */
 (function () {
   // 카운터 숫자가 올라가는 시간. 단위는 밀리초.
@@ -61,6 +61,9 @@
     view: "cards",
     chart: null,
     totalChart: null,
+    monthChart: null,
+    shareChart: null,
+    visitorDays: {},
     chartRiseUntil: 0,
     chartRiseTimer: 0,
     chartRisePending: false,
@@ -108,7 +111,12 @@
     formatNumber: formatNumber,
     paintStatic: paintStatic,
     setOdometer: setOdometer,
-    reducedMotion: reducedMotion
+    reducedMotion: reducedMotion,
+    seoulDateKey: seoulDateKey,
+    countableBlogUrl: countableBlogUrl,
+    countableBlogs: countableBlogs,
+    omitsDailyVisitors: omitsDailyVisitors,
+    characterLivePending: characterLivePending
   });
   var loginApi = window.BotDashLogin.create({
     state: state,
@@ -380,6 +388,7 @@
     if (location.protocol === "file:") {
       state.characters = [];
       state.statsUpdatedAt = null;
+      state.visitorDays = {};
       state.loadedAt = new Date();
       state.notices = ["파일을 직접 열면 마크다운을 읽지 못합니다. 웹서버로 열어 주세요."];
       return;
@@ -400,6 +409,14 @@
       };
     } catch (error) {
       notices.push("stats.json을 읽지 못했습니다. 마크다운 안의 통계만 사용합니다.");
+    }
+    state.visitorDays = {};
+    try {
+      var dayText = await fetchText("content.php?f=" + encodeURIComponent("data/visitor_days.json") + "&t=" + stamp);
+      var dayDoc = JSON.parse(dayText);
+      state.visitorDays = normalizeVisitorDays(dayDoc);
+    } catch (error) {
+      if (!error || error.message !== "HTTP 404") notices.push("일별 방문자 기록을 읽지 못했습니다.");
     }
 
     var rows = await Promise.all(files.map(async function (file) {
@@ -434,6 +451,25 @@
     state.statsUpdatedAt = statsDoc ? statsDoc.updatedAt : null;
     state.loadedAt = new Date();
     state.notices = notices;
+  }
+
+  function normalizeVisitorDays(parsed) {
+    var out = {};
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return out;
+    Object.keys(parsed).forEach(function (day) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return;
+      var row = parsed[day];
+      if (!row || typeof row !== "object" || Array.isArray(row)) return;
+      var clean = {};
+      Object.keys(row).forEach(function (url) {
+        var value = row[url];
+        if (typeof value === "string" && /^\d{1,12}$/.test(value)) value = Number(value);
+        if (typeof value !== "number" || !isFinite(value) || value < 0 || Math.floor(value) !== value) return;
+        clean[url] = value;
+      });
+      if (Object.keys(clean).length) out[day] = clean;
+    });
+    return out;
   }
 
   function findById(id) {
@@ -2141,10 +2177,38 @@
         ),
         visitorBlogsNode(character),
         deltaNode(character),
+        weekChartNode(character),
         accountNode(character)
       ),
       blogLinks(character)
     );
+  }
+
+  function weekChartNode(character) {
+    if (!countableBlogs(character).length) return null;
+    return h("section", { class: "card-week" },
+      h("h3", { text: "최근 1주일 방문자" }),
+      h("div", { class: "card-week-wrap" },
+        h("canvas", { "data-week-chart": character.id, "aria-hidden": "true" })
+      ),
+      h("p", { class: "sr-only" }),
+      h("p", { class: "card-week-empty", hidden: true })
+    );
+  }
+
+  function destroyWeekCharts(root) {
+    if (typeof Chart === "undefined" || !root) return;
+    root.querySelectorAll("[data-week-chart]").forEach(function (canvas) {
+      var chart = Chart.getChart(canvas);
+      if (chart) chart.destroy();
+    });
+  }
+
+  function renderWeekCharts() {
+    if (!window.BotDashChart || !window.BotDashChart.renderWeek) return;
+    document.querySelectorAll("#cardGrid [data-week-chart]").forEach(function (canvas) {
+      window.BotDashChart.renderWeek(canvas, findById(canvas.getAttribute("data-week-chart")));
+    });
   }
 
   function paintShellPlaceholders() {
@@ -2426,6 +2490,7 @@
     }
     if (!list.length) {
       state.cardMoving = true;
+      destroyWeekCharts(grid);
       grid.replaceChildren();
       empty.hidden = false;
       empty.replaceChildren(buildEmpty());
@@ -2436,6 +2501,7 @@
     }
     empty.hidden = true;
     state.cardMoving = true;
+    destroyWeekCharts(grid);
     grid.replaceChildren();
     var batch = createAvatarBatch();
     var savedBatch = createAvatarBatch();
@@ -2571,13 +2637,15 @@
 
   function holdChart() {
     clearChartRise();
-    ["chartEmpty", "totalChartEmpty"].forEach(function (id) {
+    ["chartEmpty", "totalChartEmpty", "monthChartEmpty", "shareChartEmpty"].forEach(function (id) {
       var empty = document.getElementById(id);
       if (empty) empty.hidden = true;
     });
     holdWrap("chartWrap");
     holdWrap("totalChartWrap");
-    ["chart", "totalChart"].forEach(function (key) {
+    holdWrap("monthChartWrap");
+    holdWrap("shareChartWrap");
+    ["chart", "totalChart", "monthChart", "shareChart"].forEach(function (key) {
       if (state[key] && state[key].destroy) {
         state[key].destroy();
         state[key] = null;
@@ -2605,8 +2673,12 @@
     var firstRise = !state.chart || !state.totalChart || forced;
     releaseChartWrap("chartWrap");
     releaseChartWrap("totalChartWrap");
+    releaseChartWrap("monthChartWrap");
+    releaseChartWrap("shareChartWrap");
     renderChart({ metric: "today", replay: options && options.replay, rise: options && options.rise });
     renderChart({ metric: "total", replay: options && options.replay, rise: options && options.rise });
+    window.BotDashChart.renderMonth({ replay: options && options.replay, rise: options && options.rise });
+    window.BotDashChart.renderShare({ replay: options && options.replay, rise: options && options.rise });
     if (!firstRise || reducedMotion) return;
     state.chartRiseUntil = Date.now() + 1000;
     if (state.chartRiseTimer) clearTimeout(state.chartRiseTimer);
@@ -2635,6 +2707,9 @@
     if (tabStats) {
       tabStats.setAttribute("aria-selected", stats ? "true" : "false");
       tabStats.tabIndex = stats ? 0 : -1;
+    }
+    if (!stats && window.BotDashChart && window.BotDashChart.resizeWeeks) {
+      requestAnimationFrame(function () { window.BotDashChart.resizeWeeks(); });
     }
   }
 
@@ -2819,6 +2894,7 @@
     }
     paintVisitorFigures();
     paintBlogCounts(null);
+    renderWeekCharts();
     markCountChecked();
     markCountsShown();
     rememberSortOrder();
@@ -2868,6 +2944,7 @@
     var visible = visibleCharacters();
     renderGrid(visible, options);
     syncView();
+    renderWeekCharts();
     if (state.view === "stats") {
       renderStatsTable();
       showChart();

@@ -74,26 +74,28 @@ sudo chmod 600 data/blogger_totals.json
 
 블로거 오늘 계산 로그는 기본적으로 남지 않습니다. 서버 `/etc/bot_dash.env`에 `BOTDASH_COUNT_LOG=1`을 넣으면 `data/blogger_count.log`에 남습니다. `0`이거나 그 줄이 없으면 꺼집니다. 켠 상태에서 `data/`에 쓰지 못하면 `/tmp/botdash-blogger-count.log`에 남고, 집계 응답 헤더 `X-Botdash-Log`가 그 경로입니다.
 
-하루 마감은 브라우저 없이 `blogger_close.php`가 남깁니다. 서버 시계는 한국시간입니다. root crontab에 한 줄만 있습니다. root는 파일 소유자와 상관없이 JSON을 쓸 수 있어서 `apache` crontab은 따로 두지 않습니다. 같은 줄을 두 계정에 넣으면 23:50에 두 번 실행됩니다.
+하루 마감은 브라우저 없이 `visitor_close.php`가 남깁니다. 네이버와 티스토리에는 특정 날짜 방문자를 주는 공개 주소가 없습니다. 네이버의 예전 5일 주소는 빈 응답이고, 티스토리 화면은 오늘·어제·전체만 보여 줍니다. 그래서 23:50에 각 블로그의 오늘 숫자를 `data/visitor_days.json`에 적습니다. 네이버는 오늘 방문자, 티스토리는 카운터의 오늘 숫자입니다. 블로거는 전체 페이지뷰를 `data/blogger_totals.json`에 남기고, 어제 마감과의 차이를 같은 파일의 오늘 값으로 적습니다. 읽지 못한 블로그는 0으로 적지 않고, 지난 날짜는 고치지 않습니다. 같은 날 다시 돌리면 더 큰 오늘 값만 남습니다.
+
+서버 시계는 한국시간입니다. root crontab에 한 줄만 있습니다. root는 파일 소유자와 상관없이 JSON을 쓸 수 있어서 `apache` crontab은 따로 두지 않습니다. 같은 줄을 두 계정에 넣거나 `blogger_close.php`와 같이 두면 23:50에 블로거를 두 번 읽습니다. `blogger_close.php`는 블로거 전체만 남기는 스크립트로 그대로 두되, 크론에는 넣지 않습니다.
 
 ```bash
-crontab -l 2>/dev/null | sed '/blogger_close\.php/d' | { cat; echo '50 23 * * * /usr/bin/php /var/www/html/bot_dash/blogger_close.php'; } | crontab -
+crontab -l 2>/dev/null | sed '/blogger_close\.php/d; /visitor_close\.php/d' | { cat; echo '50 23 * * * /usr/bin/php /var/www/html/bot_dash/visitor_close.php'; } | crontab -
 crontab -l
 ```
 
 `crontab -l`에 아래 줄이 보이면 등록된 것입니다.
 
 ```cron
-50 23 * * * /usr/bin/php /var/www/html/bot_dash/blogger_close.php
+50 23 * * * /usr/bin/php /var/www/html/bot_dash/visitor_close.php
 ```
 
-서버가 그 시각에 켜져 있어야 합니다. 시계가 한국시간이 아니면 줄 앞에 `CRON_TZ=Asia/Seoul`을 붙입니다. 첫날 기록만으로는 오늘 방문자가 나오지 않습니다. 다음 날 23:50 기록부터 어제 마감이 생겨서 오늘 방문자가 계산됩니다.
+서버가 그 시각에 켜져 있어야 합니다. 시계가 한국시간이 아니면 줄 앞에 `CRON_TZ=Asia/Seoul`을 붙입니다. 첫날 블로거 기록만으로는 오늘 방문자가 나오지 않습니다. 다음 날 23:50 기록부터 어제 마감이 생겨서 블로거 오늘 방문자가 계산됩니다. 통계 탭의 이번 달 선은 이 파일이 이번 달 기록을 가진 뒤부터 그려지고, 그 전에는 “마감 기록이 없습니다”가 나옵니다. 꺼져 있던 날은 나중에 채우지 않습니다. 만든 파일은 `data` 소유자와 같고 권한은 600입니다.
 
 ## 개인 데이터와 보안
 
 `.gitignore`는 개인 캐릭터 파일, 실제 설정 파일, 통계 데이터를 저장소에서 제외합니다. 공개 저장소에는 실제 계정 정보, 이메일, 비밀번호, 개인 메모 또는 통계를 추가하지 마세요. 예시 설정의 값은 실제 인증 정보로 사용하지 마세요.
 
-비밀번호는 `js/config.js`나 웹에서 열리는 `.env`에 넣지 않습니다. [로컬 실행](#로컬-실행)처럼 `/etc/bot_dash.env`에 `BOTDASH_USER`와 `BOTDASH_PASSWORD`를 두거나, 컨테이너에는 같은 이름의 환경 변수를 넘깁니다. 로그인한 뒤에만 `content.php`가 마크다운과 `stats.json`을 돌려주고, `profile.php`가 글·댓글 수와 프로필 사진을 가져옵니다. 이 사이트는 HTTP라 로그인 요청 자체는 암호화되지 않습니다. HTTPS가 있으면 그쪽으로 여는 것이 맞습니다.
+비밀번호는 `js/config.js`나 웹에서 열리는 `.env`에 넣지 않습니다. [로컬 실행](#로컬-실행)처럼 `/etc/bot_dash.env`에 `BOTDASH_USER`와 `BOTDASH_PASSWORD`를 두거나, 컨테이너에는 같은 이름의 환경 변수를 넘깁니다. 로그인한 뒤에만 `content.php`가 마크다운과 `stats.json`, `visitor_days.json`을 돌려주고, `profile.php`가 글·댓글 수와 프로필 사진을 가져옵니다. 이 사이트는 HTTP라 로그인 요청 자체는 암호화되지 않습니다. HTTPS가 있으면 그쪽으로 여는 것이 맞습니다.
 
 ## 캐릭터 데이터
 

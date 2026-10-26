@@ -1560,6 +1560,10 @@ function blogger_totals_path() {
     return __DIR__ . "/data/blogger_totals.json";
 }
 
+function visitor_days_path() {
+    return __DIR__ . "/data/visitor_days.json";
+}
+
 function blogger_count_log_path() {
     return __DIR__ . "/data/blogger_count.log";
 }
@@ -1685,6 +1689,54 @@ function blogger_record_total($blog, $total) {
     if ($wrote) @chmod($path, 0600);
     else blogger_count_log($blog . " 오늘 계산 실패: 마감 파일을 쓰지 못함 " . blogger_path_state($path));
     return $today;
+}
+
+function visitor_days_own($path) {
+    $dir = dirname($path);
+    $owner = @fileowner($dir);
+    $group = @filegroup($dir);
+    if (is_int($owner)) @chown($path, $owner);
+    if (is_int($group)) @chgrp($path, $group);
+    @chmod($path, 0600);
+}
+
+/**
+ * 오늘 방문자 한 칸을 data/visitor_days.json 에 남긴다.
+ * 지난 날짜와 더 작은 같은 날 값은 visitor_day_apply 가 거절한다.
+ */
+function visitor_record_day($blog, $count, $now = null) {
+    $count = count_or_null($count);
+    if (!is_string($blog) || visitor_blog_url($blog) !== $blog || !is_int($count)) return false;
+    $path = visitor_days_path();
+    $dir = dirname($path);
+    if (!is_dir($dir) || !is_writable($dir)) return false;
+    $fh = @fopen($path, "c+");
+    if (!$fh) return false;
+    if (!flock($fh, LOCK_EX)) {
+        fclose($fh);
+        return false;
+    }
+    $raw = stream_get_contents($fh);
+    if (!is_string($raw) || $raw === "") $data = array();
+    else {
+        $data = json_decode($raw, true);
+        if (!is_array($data)) $data = array();
+    }
+    $clock = seoul_clock($now);
+    $stored = visitor_day_apply(is_array($data) ? $data : array(), $blog, $clock->format("Y-m-d"), $count, $clock);
+    $json = json_encode($stored, JSON_UNESCAPED_SLASHES);
+    $wrote = false;
+    if (is_string($json)) {
+        rewind($fh);
+        if (ftruncate($fh, 0) && fwrite($fh, $json) !== false) {
+            fflush($fh);
+            $wrote = true;
+        }
+    }
+    flock($fh, LOCK_UN);
+    fclose($fh);
+    if ($wrote) visitor_days_own($path);
+    return $wrote;
 }
 
 function blogger_cached_counts($blog, $data) {
