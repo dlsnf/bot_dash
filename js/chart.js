@@ -1,22 +1,14 @@
 /**
  * 통계 탭의 막대 그래프, 이번 달 선 그래프, 전체 비중 원, 막대 위 숫자.
+ * 막대 색은 방문자 단계(오늘은 단계, 전체는 파랑)이고, 막대 위 숫자는 밝은 회색이다.
+ * 선 그래프 가로축은 27 / (화) 두 줄이고, 토요일 파랑, 일요일·법정공휴일 빨강이다.
+ * 캐릭터 카드의 최근 1주일 선은 날짜·요일과 점 위 숫자를 그린다.
  * Chart.js가 없는 화면에서는 그리지 않는다.
  */
 (function (root) {
   var deps = null;
 
-  function barColor(character) {
-    var level = deps.visitorLevel(character.todayVisitors);
-    if (level === "zero") return "#6e6e80";
-    if (level === "t10000") return "#e453ff";
-    if (level === "t5000") return "#ff3355";
-    if (level === "t1000") return "#ff4d2e";
-    if (level === "t500") return "#ff7a00";
-    if (level === "high") return "#f5a623";
-    if (level === "mid") return "#5266eb";
-    if (level === "unknown") return "#3a3a48";
-    return "#9aa6ee";
-  }
+
 
   function chartValueHost(wrap) {
     var host = wrap.querySelector(".chart-values");
@@ -90,6 +82,7 @@
         el.setAttribute("data-chart-value", row.id);
         host.appendChild(el);
       }
+      el.style.color = "";
       var reel = el.querySelector(".odometer");
       if (!reel || replay || rise) {
         var fresh = document.createElement("span");
@@ -115,11 +108,24 @@
     }
   };
 
+  function barColor(character) {
+    var level = deps.visitorLevel(character.todayVisitors);
+    if (level === "zero") return "#6e6e80";
+    if (level === "t10000") return "#e453ff";
+    if (level === "t5000") return "#ff3355";
+    if (level === "t1000") return "#ff4d2e";
+    if (level === "t500") return "#ff7a00";
+    if (level === "high") return "#f5a623";
+    if (level === "mid") return "#5266eb";
+    if (level === "unknown") return "#3a3a48";
+    return "#9aa6ee";
+  }
+
   function totalBarColor(row) {
     var value = row.totalVisitors;
     if (value == null || !isFinite(value)) return "#3a3a48";
     if (value === 0) return "#6e6e80";
-    return "#3dbea5";
+    return "#6cb6ff";
   }
 
   function chartSpec(metric) {
@@ -225,15 +231,20 @@
 
   var LINE_COLORS = ["#6cb6ff", "#3dbea5", "#e7a0c4", "#f0d36a", "#c4b5fd", "#f0a07a"];
 
-  function lineColor(id) {
+  function characterColor(row) {
+    var id = row && row.id;
     var found = 0;
     var index = 0;
-    (deps.state.characters || []).forEach(function (row) {
-      if (!row.ok || !deps.countableBlogs(row).length) return;
-      if (row.id === id) found = index;
+    (deps.state.characters || []).forEach(function (item) {
+      if (!item.ok) return;
+      if (item.id === id) found = index;
       index += 1;
     });
     return LINE_COLORS[found % LINE_COLORS.length];
+  }
+
+  function lineColor(id) {
+    return characterColor({ id: id });
   }
 
   function dayNumber(value) {
@@ -282,6 +293,370 @@
     }
     return keys;
   }
+
+  var WEEK_FONT = '"Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", sans-serif';
+  var WEEKDAYS = ["일", "월", "화", "수", "목", "금", "토"];
+
+  function weekParts(key) {
+    var matched = /^(\d{4})-(\d{2})-(\d{2})$/.exec(key || "");
+    if (!matched) return null;
+    var utc = Date.UTC(Number(matched[1]), Number(matched[2]) - 1, Number(matched[3]));
+    return {
+      month: Number(matched[2]),
+      day: Number(matched[3]),
+      week: WEEKDAYS[new Date(utc).getUTCDay()]
+    };
+  }
+
+  // 가로축은 27 / (화) 두 줄이다. 한 줄 27(화)는 카드 칸에서 겹친다.
+  function weekTickLines(key) {
+    var parts = weekParts(key);
+    if (!parts) return "";
+    return [String(parts.day), "(" + parts.week + ")"];
+  }
+
+  // 이번 달처럼 칸이 좁으면 홀수 날을 한 칸 아래로 내린다.
+  // 그래도 27이 안 들어가면 27 / 화 처럼 짧게 쓴다.
+  function monthTickLines(key, index, stagger, tight) {
+    var lines = weekTickLines(key);
+    if (tight) {
+      var parts = weekParts(key);
+      lines = parts ? [String(parts.day), parts.week] : lines;
+    }
+    if (!lines || !stagger) return lines;
+    if (index % 2 === 0) return lines.concat(["", ""]);
+    return ["", ""].concat(lines);
+  }
+
+  function weekLabel(key) {
+    var parts = weekParts(key);
+    if (!parts) return "";
+    return parts.month + "월 " + parts.day + "일(" + parts.week + ")";
+  }
+
+  // 설·추석·부처님오신날은 당일. 설·추석은 앞뒤 하루를 붙이고, 대체공휴일은 법령대로 계산한다.
+  // 신정·현충일은 대체공휴일이 없다. 노동절·제헌절은 2026년부터 공휴일이다.
+  var LUNAR_MARK = {
+    2024: { seollal: "2024-02-10", buddha: "2024-05-15", chuseok: "2024-09-17" },
+    2025: { seollal: "2025-01-29", buddha: "2025-05-05", chuseok: "2025-10-06" },
+    2026: { seollal: "2026-02-17", buddha: "2026-05-24", chuseok: "2026-09-25" },
+    2027: { seollal: "2027-02-07", buddha: "2027-05-13", chuseok: "2027-09-15" },
+    2028: { seollal: "2028-01-27", buddha: "2028-05-02", chuseok: "2028-10-03" },
+    2029: { seollal: "2029-02-13", buddha: "2029-05-20", chuseok: "2029-09-22" },
+    2030: { seollal: "2030-02-03", buddha: "2030-05-09", chuseok: "2030-09-12" },
+    2031: { buddha: "2031-05-28", chuseok: "2031-10-01" },
+    2032: { buddha: "2032-05-16", chuseok: "2032-09-19" },
+    2033: { buddha: "2033-05-06", chuseok: "2033-09-08" },
+    2034: { buddha: "2034-05-25", chuseok: "2034-09-27" },
+    2035: { buddha: "2035-05-15", chuseok: "2035-09-16" },
+    2036: { buddha: "2036-05-03", chuseok: "2036-10-04" }
+  };
+  var EXTRA_HOLIDAY = {
+    2024: ["2024-04-10", "2024-10-01"],
+    2025: ["2025-01-27", "2025-06-03"],
+    2026: ["2026-06-03"]
+  };
+  var HOLIDAY_CACHE = {};
+  var AXIS_MUTED = "#9a9aa8";
+  var AXIS_SAT = "#79b8ff";
+  var AXIS_HOLIDAY = "#ff6b6b";
+
+  function holidayKeys(year) {
+    if (HOLIDAY_CACHE[year]) return HOLIDAY_CACHE[year];
+    var set = {};
+    function ymd(month, day) {
+      return year + "-" + (month < 10 ? "0" : "") + month + "-" + (day < 10 ? "0" : "") + day;
+    }
+    var base = [];
+    function pushBase(key, sub) { if (key) base.push({ key: key, sub: sub }); }
+    pushBase(ymd(1, 1), false);
+    pushBase(ymd(6, 6), false);
+    [[3, 1], [5, 5], [8, 15], [10, 3], [10, 9], [12, 25]].forEach(function (pair) {
+      pushBase(ymd(pair[0], pair[1]), true);
+    });
+    if (year >= 2026) {
+      pushBase(ymd(5, 1), true);
+      pushBase(ymd(7, 17), true);
+    }
+    var lunar = LUNAR_MARK[year] || {};
+    if (lunar.buddha) pushBase(lunar.buddha, true);
+    ["seollal", "chuseok"].forEach(function (name) {
+      var center = lunar[name];
+      if (!center) return;
+      [-1, 0, 1].forEach(function (delta) { pushBase(seoulShift(center, delta), "span"); });
+    });
+    (EXTRA_HOLIDAY[year] || []).forEach(function (key) { pushBase(key, false); });
+    var counts = {};
+    base.forEach(function (item) {
+      counts[item.key] = (counts[item.key] || 0) + 1;
+      set[item.key] = true;
+    });
+    function nextFree(key) {
+      var cursor = key;
+      var i;
+      for (i = 0; i < 8; i++) {
+        cursor = seoulShift(cursor, 1);
+        if (!cursor) return "";
+        if (weekParts(cursor).week === "일") continue;
+        if (set[cursor]) continue;
+        return cursor;
+      }
+      return "";
+    }
+    var wanted = {};
+    base.forEach(function (item) {
+      if (item.sub === true) {
+        var week = weekParts(item.key).week;
+        if (week === "토" || week === "일" || counts[item.key] > 1) wanted[item.key] = true;
+      } else if (item.sub === "span" && weekParts(item.key).week === "일") {
+        wanted[item.key] = true;
+      }
+    });
+    Object.keys(counts).forEach(function (key) {
+      if (counts[key] > 1) wanted[key] = true;
+    });
+    Object.keys(wanted).sort().forEach(function (key) {
+      var sub = nextFree(key);
+      if (sub) set[sub] = true;
+    });
+    HOLIDAY_CACHE[year] = set;
+    return set;
+  }
+
+  function isLegalHoliday(key) {
+    var year = Number((key || "").slice(0, 4));
+    if (!year) return false;
+    return !!(holidayKeys(year - 1)[key] || holidayKeys(year)[key] || holidayKeys(year + 1)[key]);
+  }
+
+  function axisColor(key) {
+    if (isLegalHoliday(key)) return AXIS_HOLIDAY;
+    var parts = weekParts(key);
+    if (!parts) return AXIS_MUTED;
+    if (parts.week === "토") return AXIS_SAT;
+    if (parts.week === "일") return AXIS_HOLIDAY;
+    return AXIS_MUTED;
+  }
+
+  function drawStandingValues(chart, items, size, font) {
+    var ctx = chart.ctx;
+    items.forEach(function (item) {
+      var half = size / 2 + 1;
+      var minX = chart.chartArea.left + half;
+      var maxX = chart.width - half - 1;
+      if (minX <= maxX) item.x = Math.max(minX, Math.min(maxX, item.x));
+      item.bottom = item.y;
+      item.top = item.y - item.w;
+    });
+    var guard;
+    for (guard = 0; guard < 8; guard++) {
+      var moved = false;
+      for (var i = 0; i < items.length; i++) {
+        for (var j = i + 1; j < items.length; j++) {
+          var a = items[i];
+          var b = items[j];
+          if (Math.abs(a.x - b.x) >= size) continue;
+          var overlap = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+          if (overlap <= 0) continue;
+          var upper = a.top <= b.top ? a : b;
+          upper.top -= overlap + 2;
+          upper.bottom -= overlap + 2;
+          moved = true;
+        }
+      }
+      if (!moved) break;
+    }
+    ctx.save();
+    ctx.font = font;
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.lineWidth = size <= 8 ? 2 : 3;
+    ctx.strokeStyle = "#11111d";
+    ctx.lineJoin = "round";
+    items.forEach(function (item) {
+      var y = Math.max(item.w + 2, item.bottom);
+      ctx.save();
+      ctx.translate(item.x, y);
+      ctx.rotate(-Math.PI / 2);
+      ctx.fillStyle = item.color;
+      ctx.strokeText(item.text, 0, 0);
+      ctx.fillText(item.text, 0, 0);
+      ctx.restore();
+    });
+    ctx.restore();
+  }
+
+  function drawPointValues(chart) {
+    var datasets = chart.data.datasets || [];
+    if (!datasets.length || !chart.chartArea) return;
+    var size = chart.$pointFont || (chart.canvas && chart.canvas.$pointFont) || 11;
+    var ink = chart.$pointInk || (chart.canvas && chart.canvas.$pointInk) || "";
+    var ctx = chart.ctx;
+    var font = "700 " + size + "px " + WEEK_FONT;
+    ctx.save();
+    ctx.font = font;
+    var items = [];
+    datasets.forEach(function (dataset, setIndex) {
+      var meta = chart.getDatasetMeta(setIndex);
+      if (!meta || meta.hidden || !meta.data) return;
+      meta.data.forEach(function (point, index) {
+        var value = dataset.data[index];
+        if (!dayNumber(value) || !point || point.skip) return;
+        var text = deps.formatNumber(value);
+        items.push({
+          x: point.x,
+          y: point.y - 7,
+          text: text,
+          w: ctx.measureText(text).width,
+          color: ink || dataset.borderColor || "#ededf3"
+        });
+      });
+    });
+    ctx.restore();
+    if (!items.length) return;
+    var stand = chart.$pointStand || (chart.canvas && chart.canvas.$pointStand);
+    if (stand) {
+      drawStandingValues(chart, items, size, font);
+      return;
+    }
+    items.sort(function (a, b) { return a.x - b.x; });
+    var area = chart.chartArea;
+    items.forEach(function (item) {
+      var half = item.w / 2;
+      var minX = area.left + half;
+      // 오늘 숫자는 점 가운데에 둔다. 오른쪽 여백 안에 그리고, 캔버스를 넘어갈 때만 당긴다.
+      var maxX = chart.width - half - 1;
+      if (minX <= maxX) item.x = Math.max(minX, Math.min(maxX, item.x));
+    });
+    var guard;
+    for (guard = 0; guard < 4; guard++) {
+      var moved = false;
+      for (index = 1; index < items.length; index++) {
+        var left = items[index - 1];
+        var right = items[index];
+        if (Math.abs(left.x - right.x) >= (left.w + right.w) / 2 + 6) continue;
+        if (Math.abs(left.y - right.y) >= 14) continue;
+        var lift = left.y < right.y ? left : right;
+        lift.y -= 14;
+        moved = true;
+      }
+      if (!moved) break;
+    }
+    ctx.save();
+    ctx.font = font;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "bottom";
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = "#11111d";
+    ctx.lineJoin = "round";
+    items.slice().sort(function (a, b) { return b.y - a.y; }).forEach(function (item) {
+      var y = Math.max(size + 1, item.y);
+      ctx.fillStyle = item.color;
+      ctx.strokeText(item.text, item.x, y);
+      ctx.fillText(item.text, item.x, y);
+    });
+    ctx.restore();
+  }
+
+  function drawDayTicks(chart) {
+    var keys = chart.$dayKeys || (chart.canvas && chart.canvas.$dayKeys);
+    var scale = chart.scales && chart.scales.x;
+    if (!keys || !scale || !scale.ticks) return;
+    var fontSize = (scale.options.ticks.font && scale.options.ticks.font.size) || 10;
+    var ctx = chart.ctx;
+    var lineScale = (scale.options.ticks.font && scale.options.ticks.font.lineHeight) || 1.15;
+    var lineHeight = fontSize * lineScale;
+    var y0 = scale.top + (scale.options.ticks.padding || 0);
+    ctx.save();
+    ctx.font = fontSize + "px " + WEEK_FONT;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+    scale.ticks.forEach(function (tick, index) {
+      var label = tick.label;
+      var lines = Array.isArray(label) ? label : [String(label)];
+      var key = keys[tick.value != null ? tick.value : index];
+      ctx.fillStyle = axisColor(key);
+      var x = scale.getPixelForTick(index);
+      lines.forEach(function (text, line) {
+        ctx.fillText(text, x, y0 + line * lineHeight);
+      });
+    });
+    ctx.restore();
+  }
+
+  function monthInner(canvas) {
+    var parent = canvas.parentNode;
+    if (!parent) return null;
+    if (parent.classList.contains("month-chart-inner")) return parent;
+    var inner = document.createElement("div");
+    inner.className = "month-chart-inner";
+    parent.insertBefore(inner, canvas);
+    inner.appendChild(canvas);
+    return inner;
+  }
+
+  // 휴대폰처럼 하루 칸이 12px보다 좁으면 그래프를 넓혀 가로로 밀게 한다.
+  function syncMonthHost(chart) {
+    var canvas = chart.canvas;
+    if (!canvas) return false;
+    var inner = monthInner(canvas);
+    var wrap = inner && inner.parentNode;
+    var host = wrap && wrap.clientWidth;
+    var keys = chart.$dayKeys || canvas.$dayKeys || [];
+    if (!inner || !host || !keys.length) return false;
+    var hostPitch = (host - 64) / keys.length;
+    var want = hostPitch < 12 ? Math.ceil(keys.length * 28 + 80) : 0;
+    var next = want ? want + "px" : "100%";
+    if (inner.style.width === next) return false;
+    inner.style.width = next;
+    inner.style.height = "100%";
+    if (want) wrap.scrollLeft = want;
+    chart.resize();
+    return true;
+  }
+
+  function applyMonthFit(chart) {
+    if (!(chart.$monthFit || (chart.canvas && chart.canvas.$monthFit))) return;
+    if (chart.$monthUpdating) return;
+    if (syncMonthHost(chart)) return;
+    var keys = chart.$dayKeys || (chart.canvas && chart.canvas.$dayKeys);
+    var area = chart.chartArea;
+    if (!keys || !keys.length || !area || area.right - area.left < 20) return;
+    var pitch = (area.right - area.left) / keys.length;
+    var stagger = pitch < 22;
+    var tight = (stagger ? pitch * 2 : pitch) < 20;
+    var stand = pitch < 18;
+    var size = tight ? 8 : (stagger ? 9 : 10);
+    var sig = (stagger ? "s" : "n") + (tight ? "t" : "f") + (stand ? "u" : "h") + size;
+    if (chart.$monthSig === sig) return;
+    chart.$monthSig = sig;
+    chart.$pointStand = stand;
+    chart.$pointFont = size;
+    if (chart.canvas) {
+      chart.canvas.$pointStand = stand;
+      chart.canvas.$pointFont = size;
+    }
+    if (chart.options.scales.x.ticks.font) chart.options.scales.x.ticks.font.size = size;
+    chart.data.labels = keys.map(function (key, index) {
+      return monthTickLines(key, index, stagger, tight);
+    });
+    chart.$monthUpdating = true;
+    chart.update("none");
+    chart.$monthUpdating = false;
+  }
+
+  var weekPointValuesPlugin = {
+    id: "weekPointValues",
+    afterLayout: function (chart) {
+      applyMonthFit(chart);
+    },
+    afterDraw: function (chart) {
+      var keys = chart.$dayKeys || (chart.canvas && chart.canvas.$dayKeys);
+      if (!keys) return;
+      drawPointValues(chart);
+      drawDayTicks(chart);
+    }
+  };
 
   function sharePercent(value, sum) {
     if (!sum) return "0%";
@@ -348,12 +723,24 @@
     var last = keys.length - 1;
     wrap.hidden = false;
     if (empty) empty.hidden = true;
-    var monthLabel = Number(todayKey.slice(5, 7)) + "월 ";
+    canvas.$dayKeys = keys;
+    canvas.$pointFont = 10;
+    canvas.$pointStand = false;
+    canvas.$monthFit = true;
+    var monthHost = monthInner(canvas);
+    if (monthHost) {
+      var monthWrap = monthHost.parentNode;
+      var monthWidth = monthWrap && monthWrap.clientWidth;
+      var monthPitch = monthWidth ? (monthWidth - 64) / keys.length : 22;
+      monthHost.style.height = "100%";
+      monthHost.style.width = monthPitch < 12 ? Math.ceil(keys.length * 28 + 80) + "px" : "100%";
+    }
     try {
       var chart = new Chart(canvas, {
         type: "line",
+        plugins: [weekPointValuesPlugin],
         data: {
-          labels: keys.map(function (key) { return String(Number(key.slice(8))); }),
+          labels: keys.map(weekTickLines),
           datasets: rows.map(function (row) {
             var color = lineColor(row.id);
             var data = keys.map(function (key, index) {
@@ -403,8 +790,9 @@
                 title: function (items) {
                   var item = items && items[0];
                   if (!item) return "";
-                  var key = keys[item.dataIndex] || "";
-                  return monthLabel + Number(key.slice(8)) + "일" + (item.dataIndex === last ? " 진행 중" : "");
+                  var stored = (item.chart && item.chart.$dayKeys) || [];
+                  var key = stored[item.dataIndex] || "";
+                  return weekLabel(key) + (item.dataIndex === last ? " 진행 중" : "");
                 },
                 label: function (item) {
                   if (!dayNumber(item.parsed.y)) return item.dataset.label + " 없음";
@@ -413,17 +801,32 @@
               }
             }
           },
-          layout: { padding: { top: 8, left: 4, right: 12 } },
+          layout: { padding: { top: 18, left: 2, right: 22 } },
           scales: {
             x: {
-              ticks: { color: "#c3c3cc", maxRotation: 0, minRotation: 0, autoSkip: true, font: { size: 11 } },
+              offset: true,
+              ticks: {
+                color: "rgba(0,0,0,0)",
+                maxRotation: 0,
+                minRotation: 0,
+                autoSkip: false,
+                padding: 2,
+                font: { size: 10, family: WEEK_FONT, lineHeight: 1.15 }
+              },
               grid: { display: false }
             },
-            y: { beginAtZero: true, grace: "18%", ticks: { color: "#9a9aa8", precision: 0 }, grid: { color: "#2c2c3a" } }
+            y: { beginAtZero: true, grace: "28%", ticks: { color: "#9a9aa8", precision: 0, font: { size: 10, family: WEEK_FONT } }, grid: { color: "#2c2c3a" } }
           }
         }
       });
+      chart.$dayKeys = keys;
+      chart.$monthFit = true;
+      if (!chart.$monthSig) {
+        chart.$pointFont = 10;
+        chart.$pointStand = false;
+      }
       deps.state.monthChart = chart;
+      if (monthHost && monthWrap && monthHost.style.width !== "100%") monthWrap.scrollLeft = monthWrap.scrollWidth;
     } catch (error) {
       showMonthMessage(wrap, empty, "그래프를 그리지 못했습니다.");
     }
@@ -696,7 +1099,7 @@
     if (summary) {
       summary.textContent = keys.map(function (key, index) {
         var value = data[index];
-        var text = key.slice(5).replace("-", "/") + " ";
+        var text = weekLabel(key) + " ";
         return text + (dayNumber(value) ? deps.formatNumber(value) : "없음");
       }).join(", ");
     }
@@ -714,9 +1117,15 @@
     if (empty) empty.hidden = true;
     var color = lineColor(character.id);
     var existing = Chart.getChart(canvas);
+    canvas.$dayKeys = keys;
+    canvas.$pointFont = 11;
+    canvas.$pointInk = "#ededf3";
     if (existing) {
       existing.$weekKeys = keys;
-      existing.data.labels = keys.map(function (key) { return String(Number(key.slice(8))); });
+      existing.$dayKeys = keys;
+      existing.$pointFont = 11;
+      existing.$pointInk = "#ededf3";
+      existing.data.labels = keys.map(weekTickLines);
       existing.data.datasets[0].data = data;
       existing.data.datasets[0].borderColor = color;
       existing.data.datasets[0].backgroundColor = color;
@@ -726,8 +1135,9 @@
     try {
       var chart = new Chart(canvas, {
         type: "line",
+        plugins: [weekPointValuesPlugin],
         data: {
-          labels: keys.map(function (key) { return String(Number(key.slice(8))); }),
+          labels: keys.map(weekTickLines),
           datasets: [{
             data: data,
             borderColor: color,
@@ -765,7 +1175,7 @@
                   if (!item) return "";
                   var stored = item.chart.$weekKeys || [];
                   var key = stored[item.dataIndex] || "";
-                  return Number(key.slice(5, 7)) + "월 " + Number(key.slice(8)) + "일" + (item.dataIndex === stored.length - 1 ? " 진행 중" : "");
+                  return weekLabel(key) + (item.dataIndex === stored.length - 1 ? " 진행 중" : "");
                 },
                 label: function (item) {
                   if (!dayNumber(item.parsed.y)) return "없음";
@@ -774,14 +1184,32 @@
               }
             }
           },
-          layout: { padding: { top: 8, right: 4, left: 0 } },
+          layout: { padding: { top: 16, right: 22, bottom: 0, left: 0 } },
           scales: {
-            x: { ticks: { color: "#9a9aa8", maxRotation: 0, autoSkip: true, font: { size: 10 } }, grid: { display: false } },
-            y: { beginAtZero: true, grace: "20%", ticks: { color: "#9a9aa8", precision: 0, maxTicksLimit: 4, font: { size: 10 } }, grid: { color: "#2c2c3a" } }
+            x: {
+              ticks: {
+                color: "rgba(0,0,0,0)",
+                maxRotation: 0,
+                minRotation: 0,
+                autoSkip: false,
+                padding: 2,
+                font: { size: 10, family: WEEK_FONT, lineHeight: 1.15 }
+              },
+              grid: { display: false }
+            },
+            y: {
+              beginAtZero: true,
+              grace: "28%",
+              ticks: { color: "#9a9aa8", precision: 0, maxTicksLimit: 4, font: { size: 10, family: WEEK_FONT } },
+              grid: { color: "#2c2c3a" }
+            }
           }
         }
       });
       chart.$weekKeys = keys;
+      chart.$dayKeys = keys;
+      chart.$pointFont = 11;
+      chart.$pointInk = "#ededf3";
     } catch (error) {
       canvas.hidden = true;
       if (empty) {

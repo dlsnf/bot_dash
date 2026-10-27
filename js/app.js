@@ -3429,6 +3429,7 @@
       storageSet(STORAGE.view, state.view);
       // 탭만 바꿀 때 카드를 다시 만들면, 집계가 끝난 숫자가 빈 칸으로 남는다.
       syncView();
+      window.scrollTo(0, 0);
       if (state.view === "stats") {
         renderStatsTable();
         showChart(enteredStats ? { replay: true, rise: true } : null);
@@ -3452,7 +3453,19 @@
     });
   }
 
+  function bindStickyOffset() {
+    var bar = document.querySelector(".topbar");
+    if (!bar) return;
+    function apply() {
+      document.documentElement.style.setProperty("--topbar-h", bar.getBoundingClientRect().height + "px");
+    }
+    apply();
+    if (typeof ResizeObserver !== "undefined") new ResizeObserver(apply).observe(bar);
+    else window.addEventListener("resize", apply);
+  }
+
   function bindDashboard() {
+    bindStickyOffset();
     bindToolsToggle();
     bindViewTabs();
     watchCardColumns();

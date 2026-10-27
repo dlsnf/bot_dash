@@ -331,10 +331,17 @@ button, input, select { font: inherit; color: inherit; }
 .hint, .footer p, .empty p, .time-note { line-height: 1.5; }
 
 .view-bar {
+  position: sticky;
+  /* 헤더와 같은 반투명이다. 1px만 겹쳐 경계에 빈 줄이 생기지 않게 한다. */
+  top: calc(var(--topbar-h, 0px) - 1px);
+  z-index: 15;
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-top: 18px;
+  margin-top: 12px;
+  padding: 8px 0;
+  background: rgba(7, 7, 15, 0.82);
+  backdrop-filter: blur(16px);
 }
 
 .view-tabs { display: flex; gap: 8px; flex: none; }
@@ -473,8 +480,10 @@ button, input, select { font: inherit; color: inherit; }
 .chart-wrap { position: relative; height: 280px; margin-top: 8px; }
 .chart-wrap.is-month,
 .chart-wrap.is-share { height: 320px; }
+.chart-wrap.is-month { height: 380px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.month-chart-inner { position: relative; height: 100%; min-width: 100%; }
 .card-week h3 { margin: 0; color: var(--muted); font-size: 13px; font-weight: 700; }
-.card-week-wrap { position: relative; height: 124px; }
+.card-week-wrap { position: relative; height: 172px; }
 .card-week-wrap.is-pending canvas { visibility: hidden; }
 .card-week-wrap.is-pending::after {
   content: "";
@@ -1362,12 +1371,16 @@ body[data-page="login"].auth-ready .login-shell { visibility: visible; }
 .fine-print code { color: #c9d0ff; }
 
 @media (min-width: 900px) {
-  .stats-panel { grid-template-columns: 1fr 1fr; align-items: stretch; }
+  .stats-panel { grid-template-columns: repeat(10, minmax(0, 1fr)); align-items: stretch; }
+  .stats-panel > .chart-card { grid-column: span 5; }
+  .stats-panel > .chart-card-share { grid-column: span 3; }
+  .stats-panel > .chart-card-month { grid-column: span 7; }
   .stats-panel > #statsTable { grid-column: 1 / -1; }
   .stats-panel .chart-head p { max-width: none; }
   .chart-wrap,
   .chart-wrap.is-month,
   .chart-wrap.is-share { height: 260px; }
+  .chart-wrap.is-month { height: 360px; }
   .chart-wrap.is-share { height: 300px; }
   .brand-row { display: grid; grid-template-columns: minmax(180px, 1.2fr) auto auto; align-items: center; gap: 18px; }
   .boot-top { display: grid; grid-template-columns: minmax(180px, 1.2fr) auto; align-items: center; gap: 18px; }
@@ -1462,6 +1475,7 @@ body[data-page="login"].auth-ready .login-shell { visibility: visible; }
   .chart-wrap,
   .chart-wrap.is-month,
   .chart-wrap.is-share { height: 220px; }
+  .chart-wrap.is-month { height: 300px; }
   .chart-wrap.is-share { height: 268px; }
   .chart-head { flex-direction: column; align-items: stretch; }
   .chart-head p { max-width: none; }
