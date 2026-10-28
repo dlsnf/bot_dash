@@ -1,6 +1,7 @@
 /**
  * 통계 탭의 막대 그래프, 이번 달 선 그래프, 전체 비중 원, 막대 위 숫자.
- * 막대 색은 방문자 단계(오늘은 단계, 전체는 파랑)이고, 막대 위 숫자는 밝은 회색이다.
+ * 막대 색은 방문자 단계(오늘은 단계, 전체는 파랑)이고, 1등만 같은 색을 조금 진하게 한다.
+ * 막대 위 숫자는 밝은 회색이다.
  * 선 그래프 가로축은 27 / (화) 두 줄이고, 토요일 파랑, 일요일·법정공휴일 빨강이다.
  * 캐릭터 카드의 최근 1주일 선은 날짜·요일과 점 위 숫자를 그린다.
  * Chart.js가 없는 화면에서는 그리지 않는다.
@@ -151,6 +152,63 @@
     };
   }
 
+  function deepenColor(hex, step, saturate) {
+    var matched = /^#([0-9a-f]{6})$/i.exec(hex || "");
+    if (!matched) return hex;
+    var n = parseInt(matched[1], 16);
+    var r = ((n >> 16) & 255) / 255;
+    var g = ((n >> 8) & 255) / 255;
+    var b = (n & 255) / 255;
+    var max = Math.max(r, g, b);
+    var min = Math.min(r, g, b);
+    var h = 0;
+    var s = 0;
+    var l = (max + min) / 2;
+    var span = max - min;
+    if (span) {
+      s = l > 0.5 ? span / (2 - max - min) : span / (max + min);
+      if (max === r) h = ((g - b) / span + (g < b ? 6 : 0)) / 6;
+      else if (max === g) h = ((b - r) / span + 2) / 6;
+      else h = ((r - g) / span + 4) / 6;
+    }
+    l = Math.max(0.08, l - step);
+    if (saturate) s = Math.min(1, s + 0.06);
+    function channel(p, q, t) {
+      if (t < 0) t += 1;
+      if (t > 1) t -= 1;
+      if (t < 1 / 6) return p + (q - p) * 6 * t;
+      if (t < 1 / 2) return q;
+      if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+      return p;
+    }
+    var q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+    var p = 2 * l - q;
+    function byte(value) {
+      var rounded = Math.round(value * 255);
+      return (rounded < 16 ? "0" : "") + rounded.toString(16);
+    }
+    var rr = s ? channel(p, q, h + 1 / 3) : l;
+    var gg = s ? channel(p, q, h) : l;
+    var bb = s ? channel(p, q, h - 1 / 3) : l;
+    return "#" + byte(rr) + byte(gg) + byte(bb);
+  }
+
+  // 값이 가장 큰 막대만 진하게. 0뿐이면 1등을 두지 않고, 동점이면 함께 진하게 한다.
+  function rankedBarColors(rows, field, colorOf) {
+    var best = 0;
+    rows.forEach(function (row) {
+      var value = chartNumber(row, field);
+      if (value > best) best = value;
+    });
+    return rows.map(function (row) {
+      var color = colorOf(row);
+      if (best > 0 && chartNumber(row, field) === best) {
+        return field === "todayVisitors" ? deepenColor(color, 0.08, false) : deepenColor(color, 0.12, true);
+      }
+      return color;
+    });
+  }
+
   function renderChart(options) {
     var spec = chartSpec(options && options.metric);
     var wrap = document.getElementById(spec.wrapId);
@@ -185,7 +243,7 @@
           datasets: [{
             label: spec.label,
             data: rows.map(function (row) { return chartNumber(row, spec.field); }),
-            backgroundColor: rows.map(spec.color),
+            backgroundColor: rankedBarColors(rows, spec.field, spec.color),
             borderRadius: 8,
             maxBarThickness: 64
           }]
