@@ -31,7 +31,9 @@
     scroll: "botdash_scroll",
     order: "botdash_order",
     counts: "botdash_counts",
-    countsDay: "botdash_counts_day"
+    countsDay: "botdash_counts_day",
+    viewDay: "botdash_view_day",
+    theme: "botdash_theme"
   };
   var FILTERS = { all: 1, has: 1, zero: 1 };
   var SORTS = { visitors_desc: 1, visitors_asc: 1, name: 1, drop: 1, posts: 1 };
@@ -317,7 +319,34 @@
     });
   }
 
+  function applyTheme(theme, persist) {
+    theme = theme === "glass" ? "glass" : "classic";
+    document.documentElement.setAttribute("data-theme", theme);
+    if (persist) storageSet(STORAGE.theme, theme);
+    var meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute("content", theme === "glass" ? "#e6dfd4" : "#07070f");
+    document.querySelectorAll("[data-theme-choice]").forEach(function (button) {
+      var on = button.getAttribute("data-theme-choice") === theme;
+      button.setAttribute("aria-pressed", on ? "true" : "false");
+    });
+    if (!state.ready || !window.BotDashChart) return;
+    document.querySelectorAll("[data-week-chart]").forEach(function (canvas) {
+      window.BotDashChart.renderWeek(canvas, findById(canvas.getAttribute("data-week-chart")));
+    });
+    if (state.view === "stats") showChart();
+  }
+
+  function bindThemeSwitch() {
+    document.querySelectorAll("[data-theme-choice]").forEach(function (button) {
+      button.addEventListener("click", function () {
+        applyTheme(button.getAttribute("data-theme-choice"), true);
+      });
+    });
+    applyTheme(document.documentElement.getAttribute("data-theme"));
+  }
+
   function boot() {
+    bindThemeSwitch();
     bindPullRefresh();
     var page = document.body.dataset.page;
     if (typeof DASHBOARD_CONFIG === "undefined") {
@@ -1585,8 +1614,21 @@
     storageSet(STORAGE.countsDay, seoulDateKey(new Date()));
   }
 
+  // 이 브라우저에서 한국시간 오늘 페이지를 처음 연 경우. 판정은 한 번만 하고, 새로고침은 날짜를 바꾸지 않는다.
+  function captureFirstLoadToday() {
+    if (state.firstLoadToday != null) return state.firstLoadToday;
+    var today = seoulDateKey(new Date());
+    var first = storageGet(STORAGE.viewDay) !== today;
+    state.firstLoadToday = first;
+    if (first) {
+      storageSet(STORAGE.viewDay, today);
+      storageSet(STORAGE.counts, "{}");
+    }
+    return first;
+  }
+
   function seedCachedCounts() {
-    var freshDay = !countCacheIsToday();
+    var freshDay = captureFirstLoadToday() || !countCacheIsToday();
     state.countDayReset = freshDay;
     if (freshDay) {
       storageSet(STORAGE.counts, "{}");
@@ -1892,7 +1934,7 @@
   }
 
   // 같은 날 다시 열면 저장해 둔 집계를 먼저 그린 뒤 서버의 10분 캐시로 뒤에서 다시 받는다.
-  // 한국시간으로 날짜가 바뀐 뒤 처음 열면 저장값을 지우고, 오늘 방문자를 캐시 없이 다시 받는다.
+  // 이 브라우저에서 한국시간 그날 처음 열면 저장값을 버리고, 집계가 끝날 때까지 스켈레톤을 보여 준다.
   function fetchCounts(key, cacheMode) {
     return fetch("profile.php?view=counts&window=today&blog=" + encodeURIComponent(key), {
       credentials: "same-origin",
@@ -3577,6 +3619,7 @@
       showBootError("parser.js를 불러오지 못했습니다.");
       return;
     }
+    captureFirstLoadToday();
     loadPrefs();
     bindDashboard();
     paintShellPlaceholders();
@@ -3623,6 +3666,7 @@
   }
 
   function initDetailPage() {
+    captureFirstLoadToday();
     var logout = document.getElementById("logoutBtn");
     if (logout) logout.addEventListener("click", logoutUser);
     document.addEventListener("keydown", function (event) {

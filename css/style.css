@@ -188,6 +188,35 @@ button, input, select { font: inherit; color: inherit; }
 .metric-sub { color: #f0b2a4; font-size: 12px; }
 
 .top-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.action-buttons { display: inline-flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+
+.theme-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+}
+
+.theme-switch button {
+  min-height: 34px;
+  padding: 0 11px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted-strong);
+  font-size: 13px;
+  font-weight: 750;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.theme-switch button[aria-pressed="true"] {
+  background: var(--accent);
+  color: #fff;
+}
 
 .time-notes { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 2px 2px 2px; }
 
@@ -1305,6 +1334,7 @@ body.photo-open { overflow: hidden; }
   background: rgba(7, 7, 15, 0.88);
   backdrop-filter: blur(14px);
 }
+.detail-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; align-items: center; }
 .page-detail .detail { margin-top: 8px; border-radius: 18px; padding: 18px; border: 1px solid var(--border); }
 .page-detail .tabs { position: sticky; top: 64px; background: var(--elevated); z-index: 2; }
 
@@ -1336,6 +1366,8 @@ body[data-page="login"].auth-ready .login-shell { visibility: visible; }
   box-shadow: var(--shadow);
 }
 .login-card h2 { margin: 0 0 8px; font-size: 28px; }
+.login-card-top { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.login-card-top h2 { margin: 0; }
 .login-form { display: grid; gap: 14px; margin-top: 18px; }
 .remember {
   display: flex;
@@ -1441,7 +1473,8 @@ body[data-page="login"].auth-ready .login-shell { visibility: visible; }
     align-items: center;
   }
   .brand { grid-area: brand; min-width: 0; }
-  .top-actions { grid-area: actions; }
+  .top-actions { display: contents; }
+  .action-buttons { grid-area: actions; justify-content: flex-end; }
   .metrics { grid-area: metrics; width: 100%; min-width: 0; }
   .metric { min-width: 0; flex: 1 1 0; padding: 7px 8px; }
   .metric-label { font-size: 11px; }
@@ -1466,6 +1499,7 @@ body[data-page="login"].auth-ready .login-shell { visibility: visible; }
     justify-content: center;
     min-width: 40px;
   }
+  .theme-switch button { min-height: 32px; padding: 0 9px; font-size: 12px; }
   .card-grid { grid-template-columns: 1fr; }
   .view-tabs button { padding: 0 12px; }
   .tab-meta { font-size: 11px; }

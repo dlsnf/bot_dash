@@ -13,6 +13,15 @@
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='4' fill='%235266eb'/%3E%3C/svg%3E">
   <script>
     (function () {
+      try {
+        var savedTheme = localStorage.getItem("botdash_theme");
+        var theme = savedTheme === "glass" ? "glass" : "classic";
+        document.documentElement.setAttribute("data-theme", theme);
+        var themeMeta = document.querySelector('meta[name="theme-color"]');
+        if (themeMeta) themeMeta.setAttribute("content", theme === "glass" ? "#e6dfd4" : "#07070f");
+      } catch (e) {
+        document.documentElement.setAttribute("data-theme", "classic");
+      }
       if (window.matchMedia("(hover: none) and (pointer: coarse)").matches) {
         var viewport = document.querySelector('meta[name="viewport"]');
         if (viewport) viewport.setAttribute("content", "width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no");
@@ -38,7 +47,8 @@
     })();
   </script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" integrity="sha384-PPIZEGYM1v8zp5Py7UjFb79S58UeqCL9pYVnVPURKEqvioPROaVAJKKLzvH2rDnI" crossorigin="anonymous">
-  <link rel="stylesheet" href="css/style.css?v=29">
+  <link rel="stylesheet" href="css/style.css?v=32">
+  <link rel="stylesheet" href="css/theme-glass.css?v=6">
 </head>
 <body data-page="dashboard" class="is-booting">
   <a class="skip" href="#cards">캐릭터 목록으로 건너뛰기</a>
@@ -83,6 +93,7 @@
 
         </div>
         <div class="top-actions">
+          <div class="action-buttons">
           <button type="button" id="topRefreshBtn" class="btn btn-refresh">
             <i class="fa-solid fa-rotate-right" aria-hidden="true"></i>
             <span class="btn-label">새로고침</span>
@@ -96,11 +107,16 @@
             <i class="fa-solid fa-right-from-bracket" aria-hidden="true"></i>
             <span class="btn-label">로그아웃</span>
           </button>
+          </div>
         </div>
       </div>
       <div id="toolPanel" class="tool-panel">
         <div class="tool-panel-inner">
           <div class="tool-row">
+            <div class="theme-switch" role="group" aria-label="화면 테마">
+              <button type="button" data-theme-choice="classic" aria-pressed="true">기본</button>
+              <button type="button" data-theme-choice="glass" aria-pressed="false">글래시</button>
+            </div>
             <div class="search">
               <label class="sr-only" for="searchInput">캐릭터 검색</label>
               <input id="searchInput" type="search" placeholder="이름, 별명, 계정, 블로그 검색" autocomplete="off" enterkeyhint="search">
@@ -227,8 +243,8 @@
   <script src="js/config.js"></script>
   <script src="js/parser.js"></script>
   <script src="js/reel.js"></script>
-  <script src="js/chart.js?v=20"></script>
+  <script src="js/chart.js?v=23"></script>
   <script src="js/login.js?v=2"></script>
-  <script src="js/app.js?v=29"></script>
+  <script src="js/app.js?v=33"></script>
 </body>
 </html>

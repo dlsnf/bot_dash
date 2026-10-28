@@ -193,6 +193,27 @@
     return "#" + byte(rr) + byte(gg) + byte(bb);
   }
 
+  function glassTheme() {
+    return document.documentElement.getAttribute("data-theme") === "glass";
+  }
+
+  function axisColor(fallback) {
+    return glassTheme() ? "rgba(28,30,38,0.62)" : fallback;
+  }
+
+  function gridColor() {
+    return glassTheme() ? "rgba(28,30,38,0.14)" : "#2c2c3a";
+  }
+
+  // 글래시에서는 막대와 선이 배경을 비치게 한다. 기본 테마 색은 그대로다.
+  function tint(hex, alpha) {
+    if (!glassTheme()) return hex;
+    var matched = /^#([0-9a-f]{6})$/i.exec(String(hex || ""));
+    if (!matched) return hex;
+    var n = parseInt(matched[1], 16);
+    return "rgba(" + ((n >> 16) & 255) + "," + ((n >> 8) & 255) + "," + (n & 255) + "," + alpha + ")";
+  }
+
   // 값이 가장 큰 막대만 진하게. 0뿐이면 1등을 두지 않고, 동점이면 함께 진하게 한다.
   function rankedBarColors(rows, field, colorOf) {
     var best = 0;
@@ -203,9 +224,9 @@
     return rows.map(function (row) {
       var color = colorOf(row);
       if (best > 0 && chartNumber(row, field) === best) {
-        return field === "todayVisitors" ? deepenColor(color, 0.08, false) : deepenColor(color, 0.12, true);
+        color = field === "todayVisitors" ? deepenColor(color, 0.08, false) : deepenColor(color, 0.12, true);
       }
-      return color;
+      return tint(color, 0.5);
     });
   }
 
@@ -255,10 +276,10 @@
           plugins: {
             legend: { display: false },
             tooltip: {
-              backgroundColor: "#11111d",
-              titleColor: "#ededf3",
-              bodyColor: "#c3c3cc",
-              borderColor: "#2c2c3a",
+              backgroundColor: glassTheme() ? "rgba(255,255,255,0.92)" : "#11111d",
+              titleColor: glassTheme() ? "#1c1e26" : "#ededf3",
+              bodyColor: glassTheme() ? "rgba(28,30,38,0.78)" : "#c3c3cc",
+              borderColor: glassTheme() ? "rgba(255,255,255,0.8)" : "#2c2c3a",
               borderWidth: 1,
               callbacks: {
                 label: function (item) { return spec.label + " " + deps.formatNumber(item.parsed.y); }
@@ -267,8 +288,8 @@
           },
           layout: { padding: { top: 8, left: 4, right: 18 } },
           scales: {
-            x: { ticks: { color: "#c3c3cc", maxRotation: 0, minRotation: 0, autoSkip: false, font: { size: 12 } }, grid: { display: false } },
-            y: { beginAtZero: true, grace: "22%", ticks: { color: "#9a9aa8", precision: 0 }, grid: { color: "#2c2c3a" } }
+            x: { ticks: { color: axisColor("#c3c3cc"), maxRotation: 0, minRotation: 0, autoSkip: false, font: { size: 12 } }, grid: { display: false } },
+            y: { beginAtZero: true, grace: "22%", ticks: { color: axisColor("#9a9aa8"), precision: 0 }, grid: { color: gridColor() } }
           }
         }
       });
@@ -529,7 +550,7 @@
     ctx.textAlign = "left";
     ctx.textBaseline = "middle";
     ctx.lineWidth = size <= 8 ? 2 : 3;
-    ctx.strokeStyle = "#11111d";
+    ctx.strokeStyle = glassTheme() ? "rgba(255,255,255,0.94)" : "#11111d";
     ctx.lineJoin = "round";
     items.forEach(function (item) {
       var y = Math.max(item.w + 2, item.bottom);
@@ -605,7 +626,7 @@
     ctx.textAlign = "center";
     ctx.textBaseline = "bottom";
     ctx.lineWidth = 3;
-    ctx.strokeStyle = "#11111d";
+    ctx.strokeStyle = glassTheme() ? "rgba(255,255,255,0.94)" : "#11111d";
     ctx.lineJoin = "round";
     items.slice().sort(function (a, b) { return b.y - a.y; }).forEach(function (item) {
       var y = Math.max(size + 1, item.y);
@@ -808,8 +829,8 @@
             return {
               label: row.name,
               data: data,
-              borderColor: color,
-              backgroundColor: color,
+              borderColor: tint(color, 0.72),
+              backgroundColor: tint(color, 0.72),
               borderWidth: 2,
               tension: 0,
               spanGaps: false,
@@ -836,13 +857,13 @@
             legend: {
               display: true,
               position: "bottom",
-              labels: { color: "#c3c3cc", boxWidth: 12, boxHeight: 12, padding: 14, font: { size: 12 } }
+              labels: { color: axisColor("#c3c3cc"), boxWidth: 12, boxHeight: 12, padding: 14, font: { size: 12 } }
             },
             tooltip: {
-              backgroundColor: "#11111d",
-              titleColor: "#ededf3",
-              bodyColor: "#c3c3cc",
-              borderColor: "#2c2c3a",
+              backgroundColor: glassTheme() ? "rgba(255,255,255,0.92)" : "#11111d",
+              titleColor: glassTheme() ? "#1c1e26" : "#ededf3",
+              bodyColor: glassTheme() ? "rgba(28,30,38,0.78)" : "#c3c3cc",
+              borderColor: glassTheme() ? "rgba(255,255,255,0.8)" : "#2c2c3a",
               borderWidth: 1,
               callbacks: {
                 title: function (items) {
@@ -873,7 +894,7 @@
               },
               grid: { display: false }
             },
-            y: { beginAtZero: true, grace: "28%", ticks: { color: "#9a9aa8", precision: 0, font: { size: 10, family: WEEK_FONT } }, grid: { color: "#2c2c3a" } }
+            y: { beginAtZero: true, grace: "28%", ticks: { color: axisColor("#9a9aa8"), precision: 0, font: { size: 10, family: WEEK_FONT } }, grid: { color: gridColor() } }
           }
         }
       });
@@ -1007,9 +1028,17 @@
     ctx.moveTo(edgeX, edgeY);
     ctx.lineTo(joinX, textY);
     ctx.stroke();
-    ctx.fillStyle = "rgba(17, 17, 29, 0.94)";
+    ctx.fillStyle = glassTheme() ? "rgba(255,255,255,0.9)" : "rgba(17, 17, 29, 0.94)";
     fillRounded(ctx, boxLeft, boxTop, boxW + 10, 32, 7);
-    drawShareText(ctx, item, textX, textY, side > 0 ? "left" : (side < 0 ? "right" : "center"), "#ededf3", "#c3c3cc");
+    drawShareText(
+      ctx,
+      item,
+      textX,
+      textY,
+      side > 0 ? "left" : (side < 0 ? "right" : "center"),
+      glassTheme() ? "#1c1e26" : "#ededf3",
+      glassTheme() ? "rgba(28,30,38,0.72)" : "#c3c3cc"
+    );
   }
 
   function drawShareLabels(chart, sum) {
@@ -1100,8 +1129,8 @@
           labels: rows.map(function (row) { return row.name; }),
           datasets: [{
             data: rows.map(function (row) { return row.totalVisitors; }),
-            backgroundColor: rows.map(function (row) { return lineColor(row.id); }),
-            borderColor: "#11111d",
+            backgroundColor: rows.map(function (row) { return tint(lineColor(row.id), 0.62); }),
+            borderColor: glassTheme() ? "rgba(255,255,255,0.72)" : "#11111d",
             borderWidth: 2,
             hoverOffset: 0
           }]
@@ -1114,10 +1143,10 @@
           plugins: {
             legend: { display: false },
             tooltip: {
-              backgroundColor: "#11111d",
-              titleColor: "#ededf3",
-              bodyColor: "#c3c3cc",
-              borderColor: "#2c2c3a",
+              backgroundColor: glassTheme() ? "rgba(255,255,255,0.92)" : "#11111d",
+              titleColor: glassTheme() ? "#1c1e26" : "#ededf3",
+              bodyColor: glassTheme() ? "rgba(28,30,38,0.78)" : "#c3c3cc",
+              borderColor: glassTheme() ? "rgba(255,255,255,0.8)" : "#2c2c3a",
               borderWidth: 1,
               callbacks: {
                 label: function (item) {
@@ -1173,16 +1202,16 @@
     }
     canvas.hidden = false;
     if (empty) empty.hidden = true;
-    var color = lineColor(character.id);
+    var color = tint(lineColor(character.id), 0.72);
     var existing = Chart.getChart(canvas);
     canvas.$dayKeys = keys;
     canvas.$pointFont = 11;
-    canvas.$pointInk = "#ededf3";
+    canvas.$pointInk = glassTheme() ? "rgba(28,30,38,0.78)" : "#ededf3";
     if (existing) {
       existing.$weekKeys = keys;
       existing.$dayKeys = keys;
       existing.$pointFont = 11;
-      existing.$pointInk = "#ededf3";
+      existing.$pointInk = canvas.$pointInk;
       existing.data.labels = keys.map(weekTickLines);
       existing.data.datasets[0].data = data;
       existing.data.datasets[0].borderColor = color;
@@ -1222,10 +1251,10 @@
           plugins: {
             legend: { display: false },
             tooltip: {
-              backgroundColor: "#11111d",
-              titleColor: "#ededf3",
-              bodyColor: "#c3c3cc",
-              borderColor: "#2c2c3a",
+              backgroundColor: glassTheme() ? "rgba(255,255,255,0.92)" : "#11111d",
+              titleColor: glassTheme() ? "#1c1e26" : "#ededf3",
+              bodyColor: glassTheme() ? "rgba(28,30,38,0.78)" : "#c3c3cc",
+              borderColor: glassTheme() ? "rgba(255,255,255,0.8)" : "#2c2c3a",
               borderWidth: 1,
               callbacks: {
                 title: function (items) {
@@ -1258,8 +1287,8 @@
             y: {
               beginAtZero: true,
               grace: "28%",
-              ticks: { color: "#9a9aa8", precision: 0, maxTicksLimit: 4, font: { size: 10, family: WEEK_FONT } },
-              grid: { color: "#2c2c3a" }
+              ticks: { color: axisColor("#9a9aa8"), precision: 0, maxTicksLimit: 4, font: { size: 10, family: WEEK_FONT } },
+              grid: { color: gridColor() }
             }
           }
         }
@@ -1267,7 +1296,7 @@
       chart.$weekKeys = keys;
       chart.$dayKeys = keys;
       chart.$pointFont = 11;
-      chart.$pointInk = "#ededf3";
+      chart.$pointInk = canvas.$pointInk;
     } catch (error) {
       canvas.hidden = true;
       if (empty) {
