@@ -66,4 +66,5 @@ botdash_session_start();
 session_regenerate_id(true);
 $_SESSION["botdash_ok"] = true;
 $_SESSION["botdash_mark"] = botdash_mark($expectUser, $expectPass);
+$_SESSION["botdash_seen"] = time();
 botdash_json(200, array("ok" => true));

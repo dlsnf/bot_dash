@@ -12,7 +12,7 @@
   var COUNT_UP_SCALE = 180;
   // 저장해 둔 프로필 썸네일을 다시 받는 간격. 한 시간이 지나야 뒤에서 갱신한다.
   var THUMB_REFRESH_MS = 60 * 60 * 1000;
-  // 페이지를 켜 둔 채로 방문자 수를 다시 확인하는 간격. 600000이면 10분.
+  // 페이지를 켜 둔 채로 방문자 수와 최근 게시물을 다시 확인하는 간격. 600000이면 10분.
   // 로그인 시각부터 세지 않고, 지금 시각의 10분 경계(정각, 10분, 20분…)에 맞춘다.
   var COUNT_REFRESH_MS = 600000;
 
@@ -33,7 +33,9 @@
     counts: "botdash_counts",
     countsDay: "botdash_counts_day",
     viewDay: "botdash_view_day",
-    theme: "botdash_theme"
+    latestOpen: "botdash_latest_open",
+    latestSize: "botdash_latest_size",
+    latestSizeMobile: "botdash_latest_size_m"
   };
   var FILTERS = { all: 1, has: 1, zero: 1 };
   var SORTS = { visitors_desc: 1, visitors_asc: 1, name: 1, drop: 1, posts: 1 };
@@ -268,12 +270,15 @@
       window.scrollTo(0, -dy);
     }
 
+    var originLatest = false;
+
     document.addEventListener("touchstart", function (event) {
       if (fired || event.touches.length !== 1) return;
       if (!scrolledTop() || blockedTarget()) return;
       var touch = event.touches[0];
       startY = touch.clientY;
       startX = touch.clientX;
+      originLatest = !!(event.target && event.target.closest && event.target.closest("#latestViewport, #latestTicker"));
       tracking = true;
       owned = false;
       paging = false;
@@ -287,6 +292,11 @@
       var touch = event.touches[0];
       var dy = touch.clientY - startY;
       var dx = touch.clientX - startX;
+      // 최근 글 가로 스와이프는 당기기보다 먼저 넘긴다. 세로로 확실히 내릴 때만 새로고침을 잡는다.
+      if (originLatest && Math.abs(dx) >= Math.abs(dy) && Math.abs(dx) > 6) {
+        tracking = false;
+        return;
+      }
       if (!owned && raw <= 0 && dy > 0 && Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 12) {
         tracking = false;
         return;
@@ -319,34 +329,7 @@
     });
   }
 
-  function applyTheme(theme, persist) {
-    theme = theme === "glass" ? "glass" : "classic";
-    document.documentElement.setAttribute("data-theme", theme);
-    if (persist) storageSet(STORAGE.theme, theme);
-    var meta = document.querySelector('meta[name="theme-color"]');
-    if (meta) meta.setAttribute("content", theme === "glass" ? "#e6dfd4" : "#07070f");
-    document.querySelectorAll("[data-theme-choice]").forEach(function (button) {
-      var on = button.getAttribute("data-theme-choice") === theme;
-      button.setAttribute("aria-pressed", on ? "true" : "false");
-    });
-    if (!state.ready || !window.BotDashChart) return;
-    document.querySelectorAll("[data-week-chart]").forEach(function (canvas) {
-      window.BotDashChart.renderWeek(canvas, findById(canvas.getAttribute("data-week-chart")));
-    });
-    if (state.view === "stats") showChart();
-  }
-
-  function bindThemeSwitch() {
-    document.querySelectorAll("[data-theme-choice]").forEach(function (button) {
-      button.addEventListener("click", function () {
-        applyTheme(button.getAttribute("data-theme-choice"), true);
-      });
-    });
-    applyTheme(document.documentElement.getAttribute("data-theme"));
-  }
-
   function boot() {
-    bindThemeSwitch();
     bindPullRefresh();
     var page = document.body.dataset.page;
     if (typeof DASHBOARD_CONFIG === "undefined") {
@@ -518,6 +501,10 @@
     document.querySelectorAll("#filterTabs [data-filter]").forEach(function (button) {
       button.setAttribute("aria-pressed", button.getAttribute("data-filter") === state.filter ? "true" : "false");
     });
+    var desktopSize = document.getElementById("latestSizeDesktop");
+    var mobileSize = document.getElementById("latestSizeMobile");
+    if (desktopSize) desktopSize.value = String(latestStoredSize(false));
+    if (mobileSize) mobileSize.value = String(latestStoredSize(true));
     loadSortRanks();
     syncView();
   }
@@ -1924,6 +1911,7 @@
     state.countTimer = setTimeout(function () {
       state.countTimer = 0;
       refreshLiveCounts();
+      refreshLatestPosts();
       armCountRefresh(true);
     }, wait);
   }
@@ -2753,6 +2741,7 @@
     if (!stats && window.BotDashChart && window.BotDashChart.resizeWeeks) {
       requestAnimationFrame(function () { window.BotDashChart.resizeWeeks(); });
     }
+    if (!stats) requestAnimationFrame(function () { latestSnap(); });
   }
 
   function countableBlogs(character) {
@@ -3427,6 +3416,7 @@
     render({ refreshModal: true, rebuildCards: true });
     releaseCountIconHold();
     refreshThumbs();
+    paintLatestAvatars();
     if (!state.entryConsumed) {
       state.entryConsumed = true;
       consumeEntry();
@@ -3614,6 +3604,1332 @@
     else if (mobileQuery.addListener) mobileQuery.addListener(onViewport);
   }
 
+  // 최근 글. 한 쪽에 보이는 개수는 필터에 저장하고, 데스크톱과 모바일은 따로다. 기본은 5개와 3개.
+  // 처음 두 쪽을 받고, 다음 쪽으로 넘어갈 때 한 쪽을 더 받는다.
+  var LATEST_SIZE_MAX = 10;
+  var LATEST_PAGE_MS = 600;
+  // 새 페이지가 도착한 뒤에 스켈레톤을 유지하는 시간.
+  var LATEST_SKELETON_MS = 500;
+  // 접힌 티커가 다음 글로 넘어가는 데 걸리는 시간.
+  var LATEST_TICKER_MS = 1100;
+  var LATEST_TICKER_EASE = "cubic-bezier(0.76, 0, 0.24, 1)";
+  // 접힌 뉴스 티커가 한 글을 보여 주는 시간은 이 값의 절반이다.
+  var LATEST_TICKER_HOLD = 9000;
+  // 접힌 뉴스 티커는 최근 글 5개만 돈다.
+  var LATEST_TICKER_KEEP = 5;
+  var latest = {
+    posts: [],
+    more: true,
+    loading: false,
+    error: "",
+    moreError: false,
+    gen: 0,
+    bound: false,
+    pageSize: 5,
+    index: 0,
+    announced: -1,
+    timer: 0,
+    resizeTimer: 0,
+    jumping: false,
+    scrollAnim: 0,
+    tickerIndex: 0,
+    tickerTimer: 0,
+    tickerBusy: false,
+    tickerReady: false,
+    tickerFadePending: false,
+    closeTimer: 0,
+    revealFrom: -1,
+    skeletonHoldUntil: 0,
+    pendingReveal: null,
+    sizeMotion: 0
+  };
+
+  function latestStoredSize(mobile) {
+    var raw = parseInt(storageGet(mobile ? STORAGE.latestSizeMobile : STORAGE.latestSize), 10);
+    if (raw >= 1 && raw <= LATEST_SIZE_MAX) return raw;
+    return mobile ? 3 : 5;
+  }
+
+  function latestPageSize() {
+    return latestStoredSize(isMobileView());
+  }
+
+  function clearLatestBodySize() {
+    var body = document.getElementById("latestBody");
+    if (!body) return;
+    body.style.height = "";
+    body.style.overflow = "";
+    body.style.transition = "";
+  }
+
+  // 개수가 바뀌면 목록 높이가 카드 자리 이동과 같은 시간으로 늘거나 줄어든다.
+  function withLatestHeight(apply) {
+    var body = document.getElementById("latestBody");
+    var section = document.getElementById("latestPosts");
+    var animate = !!(body && section && !reducedMotion
+      && !section.classList.contains("is-collapsed")
+      && !section.classList.contains("is-opening")
+      && !section.classList.contains("is-closing"));
+    var start = animate ? body.getBoundingClientRect().height : 0;
+    apply();
+    if (!animate) return;
+    var end = body.getBoundingClientRect().height;
+    if (Math.abs(end - start) < 1) return;
+    latest.sizeMotion += 1;
+    var motion = latest.sizeMotion;
+    var finished = false;
+    function done(event) {
+      if (finished || motion !== latest.sizeMotion) return;
+      if (event && event.target !== body) return;
+      if (event && event.propertyName && event.propertyName !== "height") return;
+      finished = true;
+      clearLatestBodySize();
+      body.removeEventListener("transitionend", done);
+    }
+    body.style.overflow = "hidden";
+    body.style.height = start + "px";
+    void body.offsetHeight;
+    body.style.transition = "height 0.45s ease";
+    body.style.height = end + "px";
+    body.addEventListener("transitionend", done);
+    setTimeout(done, 520);
+  }
+
+  function applyCurrentLatestSize() {
+    if (latest.loading && !latest.posts.length) {
+      withLatestHeight(function () { loadLatestPosts(); });
+      return;
+    }
+    var next = latestPageSize();
+    var gap = next - latest.posts.length;
+    if (gap > 0 && latest.posts.length && latest.more && !latest.loading) {
+      var gen = latest.gen;
+      latest.loading = true;
+      fetchLatest(latest.posts.length, Math.min(30, gap)).then(function (data) {
+        if (gen !== latest.gen) return;
+        latestAdd(data.posts);
+        latest.loading = false;
+        latest.more = !!(data.more && data.posts.length);
+        withLatestHeight(function () { latestRegroup(); });
+      }).catch(function () {
+        if (gen !== latest.gen) return;
+        latest.loading = false;
+        withLatestHeight(function () { latestRegroup(); });
+      });
+      return;
+    }
+    withLatestHeight(function () { latestRegroup(); });
+  }
+
+  function bindLatestSize() {
+    [
+      ["latestSizeDesktop", false],
+      ["latestSizeMobile", true]
+    ].forEach(function (pair) {
+      var select = document.getElementById(pair[0]);
+      if (!select) return;
+      select.addEventListener("change", function () {
+        var next = parseInt(select.value, 10);
+        if (!(next >= 1 && next <= LATEST_SIZE_MAX)) {
+          select.value = String(latestStoredSize(pair[1]));
+          return;
+        }
+        storageSet(pair[1] ? STORAGE.latestSizeMobile : STORAGE.latestSize, String(next));
+        if (pair[1] !== isMobileView()) return;
+        document.documentElement.setAttribute("data-latest-boot", String(next));
+        applyCurrentLatestSize();
+      });
+    });
+  }
+
+  function latestPageCount(count, pageSize) {
+    if (!pageSize || count < 1) return 0;
+    return Math.ceil(count / pageSize);
+  }
+
+  function latestFetchLimit(loaded, pageSize) {
+    if (loaded < 1) return pageSize * 2;
+    return pageSize;
+  }
+
+  function latestCanLoadMore() {
+    return !!(latest.more && !latest.loading && !latest.moreError && latest.posts.length);
+  }
+
+  function latestOnLastPage() {
+    var track = document.getElementById("latestTrack");
+    if (!track || !latest.posts.length) return false;
+    var index = latest.jumping ? (latest.index || 0) : latestPageIndex();
+    var dataPages = latestPageCount(latest.posts.length, latest.pageSize);
+    return index >= dataPages - 1 && index >= track.children.length - 1;
+  }
+
+  function decodeTitle(text) {
+    var value = String(text || "");
+    if (value.indexOf("&") === -1) return value;
+    var el = document.createElement("textarea");
+    for (var i = 0; i < 3; i++) {
+      el.innerHTML = value.replace(/</g, "&lt;");
+      var next = el.value;
+      if (next === value) return value;
+      value = next;
+      if (value.indexOf("&") === -1) return value;
+    }
+    return value;
+  }
+
+  function postWhen(iso, now) {
+    var then = Date.parse(iso);
+    if (!isFinite(then)) return "";
+    var diff = (typeof now === "number" ? now : Date.now()) - then;
+    if (diff < 60000) return "방금 전";
+    var mins = Math.floor(diff / 60000);
+    if (mins < 60) return mins + "분 전";
+    var hours = Math.floor(mins / 60);
+    if (hours < 24) return hours + "시간 전";
+    var seoul = new Date(then + 9 * 60 * 60 * 1000);
+    function two(n) { return (n < 10 ? "0" : "") + n; }
+    return seoul.getUTCFullYear() + "-" + two(seoul.getUTCMonth() + 1) + "-" + two(seoul.getUTCDate());
+  }
+
+  function latestPageIndex() {
+    var frame = document.getElementById("latestViewport");
+    if (!frame || frame.clientWidth < 1) return latest.index || 0;
+    return Math.max(0, Math.round(frame.scrollLeft / frame.clientWidth));
+  }
+
+  function latestPlatformLabel(post) {
+    var character = findById(post.characterId);
+    if (!character || !character.ok) return post.platform || "블로그";
+    var want = countableBlogUrl(post.blog);
+    var rows = labeledBlogs(character, true);
+    for (var i = 0; i < rows.length; i++) {
+      if (want && countableBlogUrl(rows[i].blog.url) === want) return rows[i].label;
+    }
+    return post.platform || "블로그";
+  }
+
+  // 사진이 오기 전에는 기본 이미지를 그리지 않는다. 스켈레톤을 유지하다가 받은 사진만 연다.
+  function bindLatestAvatar(img, character) {
+    var slot = img.parentElement && img.parentElement.classList.contains("latest-avatar-slot") ? img.parentElement : img;
+    slot.classList.add("is-pending");
+    var sources = [];
+    if (character && character.ok) {
+      blogPhotoSources(character).forEach(function (source) {
+        if (!source || !source.thumb) return;
+        var key = isProfileThumb(source.thumb) ? source.thumb : "";
+        var saved = key && state.thumbs[key];
+        if (saved && saved.url) sources.push({ src: saved.url, key: key });
+        sources.push({ src: source.thumb, key: key });
+      });
+      if (character.image) {
+        var local = resolveImage(character.image);
+        if (local && local !== DASHBOARD_CONFIG.defaultImage) sources.push({ src: local, key: "" });
+      }
+    }
+    var index = 0;
+    var fallback = DASHBOARD_CONFIG.defaultImage;
+    function show(src, key) {
+      if (key) img.setAttribute("data-thumb-key", key);
+      else img.removeAttribute("data-thumb-key");
+      img.src = src;
+    }
+    function reveal() {
+      slot.classList.remove("is-pending");
+    }
+    function useFallback() {
+      img.onload = function () { reveal(); };
+      img.onerror = function () {
+        img.onerror = null;
+        reveal();
+      };
+      show(fallback, "");
+      if (img.complete && img.naturalWidth > 0) reveal();
+    }
+    img.onload = function () {
+      if (img.naturalWidth > 0) reveal();
+    };
+    img.onerror = function () {
+      index += 1;
+      if (index < sources.length) {
+        show(sources[index].src, sources[index].key);
+        return;
+      }
+      useFallback();
+    };
+    if (!sources.length) {
+      useFallback();
+      return;
+    }
+    show(sources[0].src, sources[0].key);
+    if (img.complete && img.naturalWidth > 0) reveal();
+  }
+
+  function latestAvatar(character, ticker) {
+    var size = ticker ? "20" : "28";
+    var img = h("img", {
+      class: ticker ? "latest-ticker-avatar" : "latest-avatar",
+      alt: "",
+      width: size,
+      height: size,
+      draggable: "false"
+    });
+    h("span", { class: "latest-avatar-slot is-pending", "aria-hidden": "true" }, img);
+    if ((character && character.ok) || state.ready) bindLatestAvatar(img, character && character.ok ? character : null);
+    return img.parentElement;
+  }
+
+  function paintLatestAvatars() {
+    document.querySelectorAll(".latest-item[data-latest-character], .latest-ticker-row[data-latest-character]").forEach(function (row) {
+      if (row.getAttribute("data-latest-ready") === "1") return;
+      var character = findById(row.getAttribute("data-latest-character"));
+      var img = row.querySelector(".latest-avatar, .latest-ticker-avatar");
+      if (!character || !character.ok) {
+        if (!state.ready) return;
+        row.setAttribute("data-latest-ready", "1");
+        if (img) bindLatestAvatar(img, null);
+        return;
+      }
+      row.setAttribute("data-latest-ready", "1");
+      if (img) bindLatestAvatar(img, character);
+      var name = row.querySelector(".latest-platform-name");
+      if (name) {
+        name.textContent = latestPlatformLabel({
+          characterId: character.id,
+          blog: row.getAttribute("data-latest-blog") || "",
+          platform: row.getAttribute("data-latest-kind") || ""
+        });
+      }
+    });
+  }
+
+  function tickLatestTimes() {
+    var clock = Date.now();
+    document.querySelectorAll("time[data-published]").forEach(function (node) {
+      node.textContent = postWhen(node.getAttribute("data-published"), clock);
+    });
+  }
+
+  function latestItem(post) {
+    var character = findById(post.characterId);
+    var known = !!(character && character.ok);
+    var href = safeUrl(post.url);
+    var title = href
+      ? h("a", { class: "latest-link", href: href, target: "_blank", rel: "noopener noreferrer" }, post.title, h("span", { class: "sr-only", text: " (새 탭)" }))
+      : h("span", { class: "latest-link", text: post.title });
+    return h("article", {
+      class: "latest-item",
+      "data-latest-character": post.characterId || "",
+      "data-latest-blog": post.blog || "",
+      "data-latest-kind": post.platform || "",
+      "data-latest-ready": known || state.ready ? "1" : "0"
+    },
+      latestAvatar(character, false),
+      h("span", { class: "latest-platform", "data-latest-platform": post.platform || "" },
+        platformIcon(post.platform),
+        h("span", { class: "latest-platform-name sr-only", text: latestPlatformLabel(post) })
+      ),
+      title,
+      h("time", { class: "latest-time", datetime: post.published || "", "data-published": post.published || "", text: postWhen(post.published, Date.now()) })
+    );
+  }
+
+  function latestSkeletonPage() {
+    var page = h("div", { class: "latest-page", "aria-busy": "true", "aria-label": "게시물을 불러오는 중" });
+    for (var i = 0; i < latest.pageSize; i++) {
+      page.appendChild(h("div", { class: "latest-item is-skel", "aria-hidden": "true" },
+        h("span", { class: "skeleton latest-sk-avatar" }),
+        h("span", { class: "latest-sk-lines" },
+          h("span", { class: "skeleton latest-sk-line" }),
+          h("span", { class: "skeleton latest-sk-line short" })
+        )
+      ));
+    }
+    return page;
+  }
+
+  function latestMessagePage(message, retry) {
+    var page = h("div", { class: "latest-page" });
+    var row = h("p", { class: "latest-empty", text: message });
+    if (retry) {
+      row.appendChild(document.createTextNode(" "));
+      row.appendChild(h("button", {
+        type: "button",
+        class: "latest-retry",
+        "data-latest-retry": latest.posts.length ? "more" : "reset",
+        text: "다시 시도"
+      }));
+    }
+    page.appendChild(row);
+    return page;
+  }
+
+  function latestDataPage(posts, number, reveal) {
+    var page = h("div", { class: "latest-page" + (reveal ? " is-reveal" : ""), role: "group", "aria-label": "최근 게시물 " + number + "쪽" });
+    posts.forEach(function (post) { page.appendChild(latestItem(post)); });
+    return page;
+  }
+
+  function latestShownIndex() {
+    if (latest.jumping) return latest.index || 0;
+    return latestPageIndex();
+  }
+
+  function latestPageText() {
+    var track = document.getElementById("latestTrack");
+    var total = track ? track.children.length : 0;
+    var index = latestShownIndex();
+    if (total < 1) return "1 / 1";
+    return (index + 1) + " / " + total;
+  }
+
+  function syncLatestNav() {
+    var prev = document.getElementById("latestPrev");
+    var next = document.getElementById("latestNext");
+    var track = document.getElementById("latestTrack");
+    var label = document.getElementById("latestPage");
+    if (!prev || !next || !track) return;
+    var index = latestShownIndex();
+    var max = Math.max(0, track.children.length - 1);
+    prev.disabled = index <= 0;
+    next.disabled = index >= max && !latest.more;
+    if (label) label.textContent = latestPageText();
+  }
+
+  function announceLatest() {
+    var status = document.getElementById("latestStatus");
+    if (!status) return;
+    if (latest.loading && latest.posts.length) {
+      if (latest.announced === -2) return;
+      latest.announced = -2;
+      status.textContent = "다음 게시물을 불러오는 중";
+      return;
+    }
+    var pages = latestPageCount(latest.posts.length, latest.pageSize);
+    if (!pages) return;
+    var index = latestShownIndex();
+    if (index === latest.announced) return;
+    latest.announced = index;
+    status.textContent = "최근 게시물 " + latestPageText();
+  }
+
+  function renderLatest() {
+    var section = document.getElementById("latestPosts");
+    var track = document.getElementById("latestTrack");
+    var frame = document.getElementById("latestViewport");
+    if (!section || !track || !frame) return;
+    var left = frame.scrollLeft;
+    var pages = [];
+    if (!latest.posts.length) {
+      pages.push(latest.loading ? latestSkeletonPage() : latestMessagePage(latest.error || "최근 게시물을 찾지 못했습니다.", !!latest.error));
+    } else {
+      var size = latest.pageSize;
+      var revealIndex = latest.revealFrom >= 0 ? Math.floor(latest.revealFrom / size) : -1;
+      latest.revealFrom = -1;
+      for (var i = 0; i < latest.posts.length; i += size) {
+        var pageIndex = Math.floor(i / size);
+        pages.push(latestDataPage(latest.posts.slice(i, i + size), pageIndex + 1, pageIndex === revealIndex));
+      }
+      if (latest.loading) pages.push(latestSkeletonPage());
+      else if (latest.moreError) pages.push(latestMessagePage("다음 게시물을 불러오지 못했습니다.", true));
+    }
+    track.replaceChildren.apply(track, pages);
+    latestFitPageWidths();
+    if (left) frame.scrollLeft = left;
+    section.setAttribute("aria-busy", latest.loading ? "true" : "false");
+    section.classList.toggle("is-loading", !!(latest.loading && !latest.posts.length));
+    syncLatestNav();
+    syncLatestTicker();
+  }
+
+  function latestAdd(items) {
+    var seen = {};
+    latest.posts.forEach(function (post) { seen[post.url] = true; });
+    items.forEach(function (post) {
+      if (!post || !post.url || seen[post.url]) return;
+      seen[post.url] = true;
+      latest.posts.push(post);
+    });
+  }
+
+  function fetchLatest(offset, limit) {
+    return fetch("posts.php?offset=" + offset + "&limit=" + limit, {
+      credentials: "same-origin",
+      cache: "no-store",
+      headers: { "Accept": "application/json" }
+    }).then(function (response) {
+      if (!response.ok) throw new Error("HTTP " + response.status);
+      return response.json();
+    }).then(function (data) {
+      var posts = data && Array.isArray(data.posts) ? data.posts : [];
+      posts = posts.filter(function (post) {
+        return post && typeof post.title === "string" && post.title && safeUrl(post.url);
+      }).map(function (post) {
+        return {
+          characterId: String(post.characterId || ""),
+          name: String(post.name || ""),
+          platform: String(post.platform || ""),
+          blog: String(post.blog || ""),
+          title: decodeTitle(String(post.title)),
+          url: safeUrl(post.url),
+          published: String(post.published || "")
+        };
+      });
+      return { posts: posts, more: !!(data && data.more) && posts.length > 0 };
+    });
+  }
+
+  function loadLatestPosts() {
+    var section = document.getElementById("latestPosts");
+    if (!section) return;
+    latest.gen += 1;
+    var gen = latest.gen;
+    latest.posts = [];
+    latest.more = true;
+    latest.error = "";
+    latest.moreError = false;
+    latest.loading = true;
+    latest.pageSize = latestPageSize();
+    latest.announced = -1;
+    latest.tickerReady = false;
+    latest.tickerFadePending = false;
+    renderLatest();
+    fetchLatest(0, latestFetchLimit(0, latest.pageSize)).then(function (data) {
+      if (gen !== latest.gen) return;
+      latest.loading = false;
+      latest.posts = data.posts;
+      latest.more = data.more;
+      renderLatest();
+      onLatestSettle();
+    }).catch(function () {
+      if (gen !== latest.gen) return;
+      latest.loading = false;
+      latest.more = false;
+      latest.error = "게시물을 불러오지 못했습니다.";
+      renderLatest();
+    });
+  }
+
+  function latestHoldSkeleton(apply) {
+    if (!latest.skeletonHoldUntil) {
+      latest.pendingReveal = apply;
+      return;
+    }
+    var wait = Math.max(0, latest.skeletonHoldUntil - Date.now());
+    setTimeout(apply, wait);
+  }
+
+  function latestMarkPageArrived() {
+    if (latest.skeletonHoldUntil || (!latest.loading && !latest.pendingReveal)) return;
+    var frame = document.getElementById("latestViewport");
+    var track = document.getElementById("latestTrack");
+    if (!frame || !track || frame.clientWidth < 1) return;
+    var index = Math.max(0, Math.round(frame.scrollLeft / frame.clientWidth));
+    var page = track.children[index];
+    if (!page || !page.querySelector(".is-skel")) return;
+    latest.skeletonHoldUntil = Date.now() + LATEST_SKELETON_MS;
+    if (!latest.pendingReveal) return;
+    var apply = latest.pendingReveal;
+    latest.pendingReveal = null;
+    setTimeout(apply, LATEST_SKELETON_MS);
+  }
+
+  function latestFitPageWidths() {
+    var frame = document.getElementById("latestViewport");
+    var track = document.getElementById("latestTrack");
+    if (!frame || !track || frame.clientWidth < 1) return;
+    var width = frame.clientWidth + "px";
+    for (var i = 0; i < track.children.length; i++) {
+      var page = track.children[i];
+      if (page.style.width === width && page.style.flexBasis === width) continue;
+      page.style.width = width;
+      page.style.flexBasis = width;
+    }
+  }
+
+  function latestAppendSkeleton() {
+    var track = document.getElementById("latestTrack");
+    if (!track) return;
+    var last = track.lastElementChild;
+    if (last && last.getAttribute("aria-busy") === "true") return;
+    track.appendChild(latestSkeletonPage());
+    latestFitPageWidths();
+  }
+
+  function loadLatestMore() {
+    if (!latestCanLoadMore()) return false;
+    var gen = latest.gen;
+    var offset = latest.posts.length;
+    var limit = latestFetchLimit(offset, latest.pageSize);
+    latest.skeletonHoldUntil = 0;
+    latest.pendingReveal = null;
+    latest.loading = true;
+    latest.moreError = false;
+    latestAppendSkeleton();
+    announceLatest();
+    fetchLatest(offset, limit).then(function (data) {
+      latestHoldSkeleton(function () {
+        if (gen !== latest.gen) return;
+        var before = latest.posts.length;
+        latestAdd(data.posts);
+        latest.loading = false;
+        latest.more = latest.posts.length > before && data.more;
+        if (latest.posts.length > before) latest.revealFrom = before;
+        renderLatest();
+        onLatestSettle();
+      });
+    }).catch(function () {
+      latestHoldSkeleton(function () {
+        if (gen !== latest.gen) return;
+        latest.loading = false;
+        latest.moreError = true;
+        renderLatest();
+      });
+    });
+    return true;
+  }
+
+  function onLatestSettle() {
+    if (latest.jumping) return;
+    var frame = document.getElementById("latestViewport");
+    if (frame && (frame.classList.contains("is-dragging") || frame.classList.contains("is-paging"))) return;
+    if (frame && frame.clientWidth >= 1) latest.index = Math.max(0, Math.round(frame.scrollLeft / frame.clientWidth));
+    syncLatestNav();
+    announceLatest();
+    latestMarkPageArrived();
+  }
+
+  function refreshLatestPosts() {
+    var section = document.getElementById("latestPosts");
+    if (!section || latest.loading) return;
+    var gen = latest.gen;
+    var size = latest.pageSize || latestPageSize();
+    var want = Math.max(latest.posts.length, latestFetchLimit(0, size));
+    var anchor = "";
+    if (latest.posts.length) {
+      var at = latestPageIndex() * size;
+      if (latest.posts[at]) anchor = latest.posts[at].url;
+    }
+    var collected = [];
+    var more = true;
+    function step() {
+      var limit = Math.min(30, want - collected.length);
+      if (limit < 1) return Promise.resolve({ posts: collected, more: more });
+      return fetchLatest(collected.length, limit).then(function (data) {
+        if (gen !== latest.gen) return null;
+        data.posts.forEach(function (post) { collected.push(post); });
+        more = data.more;
+        if (!more || collected.length >= want) return { posts: collected, more: more };
+        return step();
+      });
+    }
+    step().then(function (data) {
+      if (!data || gen !== latest.gen || latest.loading) return;
+      latest.posts = data.posts;
+      latest.more = data.more;
+      latest.error = "";
+      latest.moreError = false;
+      renderLatest();
+      paintLatestAvatars();
+      var frame = document.getElementById("latestViewport");
+      if (anchor && frame && frame.clientWidth) {
+        var found = -1;
+        for (var i = 0; i < latest.posts.length; i++) {
+          if (latest.posts[i].url === anchor) { found = i; break; }
+        }
+        if (found >= 0) {
+          latest.index = Math.floor(found / size);
+          frame.scrollLeft = latest.index * frame.clientWidth;
+        }
+      }
+      onLatestSettle();
+    }).catch(function () {});
+  }
+
+  function finishLatestMotion() {
+    latest.closeTimer = 0;
+    var section = document.getElementById("latestPosts");
+    if (!section) return;
+    var closing = section.classList.contains("is-closing");
+    var host = document.getElementById("latestTicker");
+    // 접힘 페이드가 끝난 뒤 tickerIn이 다시 돌거나 티커를 다시 그리면 한 프레임 깜빡인다.
+    if (host) host.classList.remove("is-in");
+    section.classList.remove("is-opening", "is-closing", "is-open-ready");
+    if (!closing) return;
+    section.classList.add("is-collapsed");
+    document.documentElement.setAttribute("data-latest", "closed");
+    latest.tickerFadePending = false;
+    if (host && !host.querySelector(".latest-ticker-track") && !latest.tickerBusy) renderLatestTicker();
+    scheduleLatestTicker();
+  }
+
+  function latestSetOpen(open, persist) {
+    var section = document.getElementById("latestPosts");
+    var toggle = document.getElementById("latestToggle");
+    if (!section || !toggle) return;
+    latest.sizeMotion += 1;
+    clearLatestBodySize();
+    if (latest.closeTimer) {
+      clearTimeout(latest.closeTimer);
+      latest.closeTimer = 0;
+    }
+    var fadeClose = !open && persist && !reducedMotion;
+    section.classList.toggle("is-collapsed", !open && !fadeClose);
+    toggle.setAttribute("aria-expanded", open ? "true" : "false");
+    toggle.setAttribute("aria-label", open ? "최근 게시물 접기" : "최근 게시물 펼치기");
+    if (open || fadeClose) document.documentElement.removeAttribute("data-latest");
+    else document.documentElement.setAttribute("data-latest", "closed");
+    section.classList.remove("is-opening", "is-closing", "is-open-ready");
+    if (!open) {
+      var tickerHost = document.getElementById("latestTicker");
+      if (tickerHost) tickerHost.classList.remove("is-in");
+    }
+    if (persist && !reducedMotion) {
+      void section.offsetWidth;
+      if (open) {
+        section.classList.add("is-opening");
+        // 높이가 다 커지기 전, 0.2s 뒤에 목록 페이드를 시작한다.
+        latest.closeTimer = setTimeout(function () {
+          latest.closeTimer = 0;
+          if (!section.classList.contains("is-opening")) return;
+          section.classList.add("is-open-ready");
+          latest.closeTimer = setTimeout(finishLatestMotion, 300);
+        }, 200);
+      } else {
+        section.classList.add("is-closing");
+        latest.closeTimer = setTimeout(finishLatestMotion, 300);
+      }
+    }
+    if (persist) {
+      try { localStorage.setItem(STORAGE.latestOpen, open ? "1" : "0"); } catch (error) {}
+    }
+    if (!open && section.contains(document.activeElement) && document.activeElement !== toggle) toggle.focus();
+    if (!fadeClose) {
+      syncLatestTicker();
+      if (!open && latest.tickerFadePending) fadeLatestTicker();
+    }
+    if (open) {
+      // 티커에 보이던 글이 들어 있는 페이지를 넘김 없이 바로 연다.
+      if (latestTickerPosts().length) latest.index = latestPageForTicker();
+      var frame = document.getElementById("latestViewport");
+      if (frame) void frame.offsetWidth;
+      latest.jumping = !frame || frame.clientWidth < 1;
+      latestSnap();
+      syncLatestNav();
+      requestAnimationFrame(function () {
+        latestSnap();
+        latest.jumping = false;
+        syncLatestNav();
+        announceLatest();
+      });
+    }
+  }
+
+  function latestScrollTo(frame, left, done, glide) {
+    if (latest.scrollAnim) {
+      cancelAnimationFrame(latest.scrollAnim);
+      latest.scrollAnim = 0;
+    }
+    if (reducedMotion) {
+      frame.classList.remove("is-paging");
+      frame.scrollLeft = left;
+      if (done) done();
+      return;
+    }
+    var start = frame.scrollLeft;
+    var change = left - start;
+    if (!change) {
+      frame.classList.remove("is-paging");
+      if (done) done();
+      return;
+    }
+    frame.classList.add("is-paging");
+    var duration = glide && glide.duration ? glide.duration : LATEST_PAGE_MS;
+    var began = 0;
+    function step(now) {
+      if (!began) began = now;
+      var progress = Math.min(1, (now - began) / duration);
+      var eased = glide
+        ? 1 - Math.pow(1 - progress, 3)
+        : (progress < 0.5
+          ? 8 * progress * progress * progress * progress
+          : 1 - Math.pow(-2 * progress + 2, 4) / 2);
+      frame.scrollLeft = start + change * eased;
+      if (progress < 1) {
+        latest.scrollAnim = requestAnimationFrame(step);
+        return;
+      }
+      latest.scrollAnim = 0;
+      frame.scrollLeft = left;
+      frame.classList.remove("is-paging");
+      if (done) done();
+    }
+    latest.scrollAnim = requestAnimationFrame(step);
+  }
+
+  function latestIsClosed() {
+    var section = document.getElementById("latestPosts");
+    return !!(section && section.classList.contains("is-collapsed"));
+  }
+
+  function latestTickerPosts() {
+    return latest.posts.slice(0, LATEST_TICKER_KEEP);
+  }
+
+  // 접힌 티커에서 지금 보이는 글. 슬라이드가 절반을 넘기면 올라오는 글이다.
+  function latestTickerPostIndex() {
+    var posts = latestTickerPosts();
+    if (!posts.length) return 0;
+    var index = latest.tickerIndex % posts.length;
+    var host = document.getElementById("latestTicker");
+    var track = host && host.querySelector(".latest-ticker-track");
+    var row = track && track.firstElementChild;
+    if (!track || !row || row.offsetHeight < 1) return index;
+    var moved = 0;
+    var raw = window.getComputedStyle(track).transform;
+    var matched = raw && raw !== "none" ? /matrix(?:3d)?\(([^)]+)\)/.exec(raw) : null;
+    if (matched) {
+      var parts = matched[1].split(",");
+      var translateY = parts.length >= 16 ? parts[13] : parts[5];
+      moved = Math.abs(parseFloat(translateY) || 0);
+    }
+    if (moved >= row.offsetHeight / 2) index = (index + 1) % posts.length;
+    return index;
+  }
+
+  function latestPageForTicker() {
+    var size = latest.pageSize || latestPageSize();
+    if (size < 1) return latest.index || 0;
+    var count = Math.max(1, Math.ceil(latest.posts.length / size));
+    return Math.max(0, Math.min(count - 1, Math.floor(latestTickerPostIndex() / size)));
+  }
+
+  function latestTickerRow(post, hidden) {
+    var href = safeUrl(post.url);
+    var props = {
+      class: "latest-ticker-row",
+      "data-latest-character": post.characterId || ""
+    };
+    var tag = "span";
+    if (href) {
+      tag = "a";
+      props.href = href;
+      props.target = "_blank";
+      props.rel = "noopener noreferrer";
+    }
+    if (hidden) {
+      props["aria-hidden"] = "true";
+      props.tabindex = "-1";
+    }
+    var character = findById(post.characterId);
+    var known = !!(character && character.ok);
+    if (known || state.ready) props["data-latest-ready"] = "1";
+    return h(tag, props,
+      latestAvatar(character, true),
+      platformIcon(post.platform),
+      h("span", { class: "latest-ticker-title", text: post.title }),
+      h("time", {
+        class: "latest-ticker-time",
+        datetime: post.published || "",
+        "data-published": post.published || "",
+        text: postWhen(post.published, Date.now())
+      })
+    );
+  }
+
+  function latestTickerSkeleton() {
+    return h("div", { class: "latest-ticker-window" },
+      h("div", { class: "latest-ticker-row is-skel", "aria-hidden": "true" },
+        h("span", { class: "skeleton latest-ticker-sk-avatar" }),
+        h("span", { class: "skeleton latest-ticker-sk-icon" }),
+        h("span", { class: "skeleton latest-ticker-sk-title" }),
+        h("span", { class: "skeleton latest-ticker-sk-time" })
+      )
+    );
+  }
+
+  function renderLatestTicker() {
+    var host = document.getElementById("latestTicker");
+    if (!host) return;
+    var posts = latestTickerPosts();
+    if (!posts.length) {
+      host.classList.remove("is-in");
+      if (latest.loading) host.replaceChildren(latestTickerSkeleton());
+      else host.replaceChildren();
+      return;
+    }
+    if (latest.tickerIndex >= posts.length) latest.tickerIndex = 0;
+    var firstPaint = !latest.tickerReady;
+    var windowEl = h("div", { class: "latest-ticker-window" });
+    var track = h("div", { class: "latest-ticker-track" });
+    var next = (latest.tickerIndex + 1) % posts.length;
+    track.appendChild(latestTickerRow(posts[latest.tickerIndex], false));
+    track.appendChild(latestTickerRow(posts[next], true));
+    windowEl.appendChild(track);
+    host.replaceChildren(windowEl);
+    if (!firstPaint) return;
+    latest.tickerReady = true;
+    fadeLatestTicker();
+  }
+
+  function fadeLatestTicker() {
+    if (reducedMotion) {
+      latest.tickerFadePending = false;
+      return;
+    }
+    var host = document.getElementById("latestTicker");
+    if (!host || !latestIsClosed()) {
+      latest.tickerFadePending = true;
+      return;
+    }
+    latest.tickerFadePending = false;
+    host.classList.remove("is-in");
+    void host.offsetWidth;
+    host.classList.add("is-in");
+  }
+
+  function slideLatestTicker(delta, speed) {
+    var host = document.getElementById("latestTicker");
+    if (!host || latest.tickerBusy || !latestIsClosed()) return false;
+    var posts = latestTickerPosts();
+    if (posts.length < 2 || !delta) return false;
+    var track = host.querySelector(".latest-ticker-track");
+    var row = track && track.firstElementChild;
+    var distance = row ? row.offsetHeight : 0;
+    if (!track || distance < 1) return false;
+    var count = posts.length;
+    var step = delta > 0 ? 1 : -1;
+    var landed = (latest.tickerIndex + step + count) % count;
+    clearLatestTickerTimer();
+    if (reducedMotion) {
+      latest.tickerIndex = landed;
+      renderLatestTicker();
+      scheduleLatestTicker();
+      return true;
+    }
+    latest.tickerBusy = true;
+    var ms = speed || LATEST_TICKER_MS;
+    var finished = false;
+    function finish() {
+      if (finished) return;
+      finished = true;
+      latest.tickerBusy = false;
+      latest.tickerIndex = landed;
+      renderLatestTicker();
+      scheduleLatestTicker();
+    }
+    if (step < 0) {
+      track.insertBefore(latestTickerRow(posts[landed], true), track.firstElementChild);
+      track.style.transition = "none";
+      track.style.transform = "translateY(" + (-distance) + "px)";
+      void track.offsetWidth;
+    }
+    track.addEventListener("transitionend", finish);
+    setTimeout(finish, ms + 280);
+    track.style.transition = "transform " + ms + "ms " + LATEST_TICKER_EASE;
+    void track.offsetWidth;
+    track.style.transform = step > 0 ? "translateY(" + (-distance) + "px)" : "translateY(0)";
+    return true;
+  }
+
+  function advanceLatestTicker() {
+    var host = document.getElementById("latestTicker");
+    if (!host || latest.tickerBusy || !latestIsClosed()) return false;
+    if (host.contains(document.activeElement)) return false;
+    if (host.matches(":hover") && window.matchMedia("(hover: hover) and (pointer: fine)").matches) return false;
+    return slideLatestTicker(1);
+  }
+
+  function latestTickerDwell() {
+    return Math.max(1, Math.round(LATEST_TICKER_HOLD / 2));
+  }
+
+  function clearLatestTickerTimer() {
+    if (!latest.tickerTimer) return;
+    clearTimeout(latest.tickerTimer);
+    latest.tickerTimer = 0;
+  }
+
+  function scheduleLatestTicker() {
+    if (latest.tickerTimer || latest.tickerBusy) return;
+    if (!latestIsClosed() || latestTickerPosts().length < 2) return;
+    var host = document.getElementById("latestTicker");
+    if (host && host.contains(document.activeElement)) return;
+    if (host && host.matches(":hover") && window.matchMedia("(hover: hover) and (pointer: fine)").matches) return;
+    latest.tickerTimer = setTimeout(function () {
+      latest.tickerTimer = 0;
+      var started = advanceLatestTicker();
+      if (!started || reducedMotion) scheduleLatestTicker();
+    }, latestTickerDwell());
+  }
+
+  function syncLatestTicker() {
+    if (!latest.tickerBusy) renderLatestTicker();
+    if (!latestIsClosed() || latestTickerPosts().length < 2) {
+      clearLatestTickerTimer();
+      return;
+    }
+    if (!latest.tickerBusy) scheduleLatestTicker();
+  }
+
+  function latestSnap() {
+    var frame = document.getElementById("latestViewport");
+    if (!frame || frame.clientWidth < 1) return;
+    var max = Math.max(0, frame.querySelectorAll(".latest-page").length - 1);
+    var index = Math.max(0, Math.min(max, latest.index || 0));
+    latest.index = index;
+    frame.scrollLeft = index * frame.clientWidth;
+  }
+
+  function latestRegroup() {
+    var nextSize = latestPageSize();
+    if (!latest.posts.length) {
+      if (nextSize !== latest.pageSize && latest.loading) {
+        latest.pageSize = nextSize;
+        renderLatest();
+      } else latest.pageSize = nextSize;
+      return;
+    }
+    if (nextSize === latest.pageSize) {
+      latestFitPageWidths();
+      latestSnap();
+      return;
+    }
+    var frame = document.getElementById("latestViewport");
+    var anchor = latestPageIndex() * latest.pageSize;
+    latest.pageSize = nextSize;
+    latest.index = Math.floor(anchor / nextSize);
+    renderLatest();
+    if (frame && frame.clientWidth) frame.scrollLeft = latest.index * frame.clientWidth;
+    onLatestSettle();
+  }
+
+  function latestPullNext() {
+    if (!latestOnLastPage() || !loadLatestMore()) return false;
+    var frame = document.getElementById("latestViewport");
+    var track = document.getElementById("latestTrack");
+    if (!frame || !track) return true;
+    var index = Math.max(0, track.children.length - 1);
+    latestScrollTo(frame, index * (frame.clientWidth || 1), function () { onLatestSettle(); });
+    return true;
+  }
+
+  function latestGo(delta) {
+    var frame = document.getElementById("latestViewport");
+    var track = document.getElementById("latestTrack");
+    if (!frame || !track) return;
+    var current = latest.jumping ? (latest.index || 0) : latestPageIndex();
+    if (delta > 0 && latestOnLastPage()) loadLatestMore();
+    track = document.getElementById("latestTrack");
+    var max = Math.max(0, track.children.length - 1);
+    var index = Math.max(0, Math.min(max, current + delta));
+    latest.index = index;
+    latest.jumping = true;
+    syncLatestNav();
+    announceLatest();
+    latestScrollTo(frame, index * (frame.clientWidth || 1), function () {
+      latest.jumping = false;
+      onLatestSettle();
+    });
+  }
+
+  function suppressNextClick() {
+    function stop(event) {
+      document.removeEventListener("click", stop, true);
+      event.preventDefault();
+      event.stopPropagation();
+    }
+    document.addEventListener("click", stop, true);
+    setTimeout(function () { document.removeEventListener("click", stop, true); }, 500);
+  }
+
+  function bindLatestTickerSwipe(host) {
+    var start = null;
+    host.addEventListener("touchstart", function (event) {
+      if (event.touches.length !== 1 || latest.tickerBusy) return;
+      var touch = event.touches[0];
+      start = { x: touch.clientX, y: touch.clientY, moved: false, ignore: false };
+      clearLatestTickerTimer();
+    }, { passive: true });
+    host.addEventListener("touchmove", function (event) {
+      if (!start || start.ignore || event.touches.length !== 1) return;
+      var touch = event.touches[0];
+      var dx = touch.clientX - start.x;
+      var dy = touch.clientY - start.y;
+      if (!start.moved) {
+        if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+        if (Math.abs(dy) > Math.abs(dx)) {
+          start.ignore = true;
+          scheduleLatestTicker();
+          return;
+        }
+        start.moved = true;
+      }
+      if (event.cancelable) event.preventDefault();
+    }, { passive: false });
+    function end(event) {
+      if (!start) return;
+      var current = start;
+      start = null;
+      if (current.ignore || !current.moved) {
+        scheduleLatestTicker();
+        return;
+      }
+      suppressNextClick();
+      var point = event.changedTouches && event.changedTouches[0];
+      var dx = event.type === "touchcancel" || !point ? 0 : point.clientX - current.x;
+      if (Math.abs(dx) < 24 || !slideLatestTicker(dx < 0 ? 1 : -1, 420)) scheduleLatestTicker();
+    }
+    host.addEventListener("touchend", end);
+    host.addEventListener("touchcancel", end);
+  }
+
+  function bindLatestDrag(frame) {
+    var drag = null;
+    var touchDrag = null;
+    var blockClick = false;
+    function pageLimit() {
+      return Math.max(0, frame.querySelectorAll(".latest-page").length - 1) * (frame.clientWidth || 1);
+    }
+    function settleTouch(current, dx, velocity) {
+      frame.classList.add("is-paging");
+      frame.classList.remove("is-dragging");
+      var width = frame.clientWidth || 1;
+      var max = Math.max(0, frame.querySelectorAll(".latest-page").length - 1);
+      var startPage = Math.max(0, Math.min(max, Math.round(current.left / width)));
+      var commit = Math.min(48, width * 0.14);
+      var dir = 0;
+      if (dx <= -commit || (velocity < -0.4 && dx < -10)) dir = 1;
+      else if (dx >= commit || (velocity > 0.4 && dx > 10)) dir = -1;
+      var index = dir === 0
+        ? Math.max(0, Math.min(max, Math.round(frame.scrollLeft / width)))
+        : Math.max(0, Math.min(max, startPage + dir));
+      var target = index * width;
+      var remain = Math.abs(target - frame.scrollLeft);
+      if (remain < 1) {
+        frame.classList.remove("is-paging");
+        onLatestSettle();
+        return;
+      }
+      // 손을 뗀 뒤의 마지막 구간은 느리게 출발하지 않고 바로 이어져 자리에 앉는다.
+      latestScrollTo(frame, target, function () {
+        onLatestSettle();
+      }, {
+        duration: Math.round(Math.max(90, Math.min(420, remain / width * 380)))
+      });
+    }
+    // 터치 스와이프는 pointer 이벤트가 중간에 끊긴다. touchmove에서 직접 넘긴다.
+    frame.addEventListener("touchstart", function (event) {
+      if (event.touches.length !== 1) {
+        touchDrag = null;
+        return;
+      }
+      if (latest.scrollAnim) {
+        cancelAnimationFrame(latest.scrollAnim);
+        latest.scrollAnim = 0;
+        frame.classList.remove("is-paging");
+        latest.jumping = false;
+      }
+      var touch = event.touches[0];
+      touchDrag = {
+        x: touch.clientX,
+        y: touch.clientY,
+        left: frame.scrollLeft,
+        atEnd: frame.scrollLeft >= frame.scrollWidth - frame.clientWidth - 2,
+        moved: false,
+        ignore: false,
+        armed: false,
+        samples: [{ x: touch.clientX, t: event.timeStamp }]
+      };
+    }, { passive: true });
+    frame.addEventListener("touchmove", function (event) {
+      if (!touchDrag || touchDrag.ignore || event.touches.length !== 1) return;
+      var touch = event.touches[0];
+      var dx = touch.clientX - touchDrag.x;
+      var dy = touch.clientY - touchDrag.y;
+      if (!touchDrag.moved) {
+        if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+        if (Math.abs(dy) > Math.abs(dx)) {
+          touchDrag.ignore = true;
+          return;
+        }
+        touchDrag.moved = true;
+        frame.classList.add("is-dragging");
+        void frame.offsetWidth;
+      }
+      if (touchDrag.atEnd && !touchDrag.armed && dx < -8) {
+        touchDrag.armed = true;
+        loadLatestMore();
+      }
+      var widthNow = frame.clientWidth || 1;
+      var origin = Math.round(touchDrag.left / widthNow) * widthNow;
+      var next = touchDrag.left - dx;
+      if (next < origin - widthNow) next = origin - widthNow;
+      if (next > origin + widthNow) next = origin + widthNow;
+      if (next < 0) next = 0;
+      var limit = pageLimit();
+      if (next > limit) next = limit;
+      frame.scrollLeft = next;
+      touchDrag.samples.push({ x: touch.clientX, t: event.timeStamp });
+      if (touchDrag.samples.length > 5) touchDrag.samples.shift();
+      if (event.cancelable) event.preventDefault();
+    }, { passive: false });
+    function endTouch(event) {
+      if (!touchDrag) return;
+      var current = touchDrag;
+      touchDrag = null;
+      if (current.ignore || !current.moved) {
+        frame.classList.remove("is-dragging");
+        return;
+      }
+      suppressNextClick();
+      var point = event.changedTouches && event.changedTouches[0];
+      var dx = event.type === "touchcancel" || !point ? 0 : point.clientX - current.x;
+      var samples = current.samples;
+      var velocity = 0;
+      if (event.type !== "touchcancel" && samples.length >= 2) {
+        var first = samples[0];
+        var last = samples[samples.length - 1];
+        velocity = (last.x - first.x) / Math.max(16, last.t - first.t);
+      }
+      settleTouch(current, dx, velocity);
+    }
+    frame.addEventListener("touchend", endTouch);
+    frame.addEventListener("touchcancel", endTouch);
+    frame.addEventListener("pointerdown", function (event) {
+      if (event.pointerType === "touch") return;
+      if (latest.scrollAnim) {
+        cancelAnimationFrame(latest.scrollAnim);
+        latest.scrollAnim = 0;
+        frame.classList.remove("is-paging");
+        latest.jumping = false;
+      }
+      if (event.button !== 0) return;
+      drag = { id: event.pointerId, x: event.clientX, left: frame.scrollLeft, moved: false };
+    });
+    frame.addEventListener("pointermove", function (event) {
+      if (event.pointerType === "touch") return;
+      if (!drag || event.pointerId !== drag.id) return;
+      var mouseDx = event.clientX - drag.x;
+      if (!drag.moved && Math.abs(mouseDx) < 8) return;
+      if (!drag.moved) {
+        drag.moved = true;
+        frame.classList.add("is-dragging");
+        if (frame.setPointerCapture) {
+          try { frame.setPointerCapture(event.pointerId); } catch (error) {}
+        }
+      }
+      frame.scrollLeft = drag.left - mouseDx;
+    });
+    function endDrag(event) {
+      if (event.pointerType === "touch") return;
+      if (!drag || event.pointerId !== drag.id) return;
+      var moved = drag.moved;
+      var dx = event.clientX - drag.x;
+      var startedAtEnd = drag.left >= frame.scrollWidth - frame.clientWidth - 2;
+      drag = null;
+      frame.classList.remove("is-dragging");
+      if (!moved) return;
+      blockClick = true;
+      var width = frame.clientWidth || 1;
+      var max = Math.max(0, frame.querySelectorAll(".latest-page").length - 1);
+      var index = Math.max(0, Math.min(max, Math.round(frame.scrollLeft / width)));
+      if (dx <= -56 && startedAtEnd && latestPullNext()) return;
+      latestScrollTo(frame, index * width, function () { onLatestSettle(); });
+    }
+    frame.addEventListener("pointerup", endDrag);
+    frame.addEventListener("pointercancel", endDrag);
+    frame.addEventListener("click", function (event) {
+      if (!blockClick) return;
+      blockClick = false;
+      event.preventDefault();
+      event.stopPropagation();
+    }, true);
+  }
+
+  function bindLatestPosts() {
+    var section = document.getElementById("latestPosts");
+    var frame = document.getElementById("latestViewport");
+    if (!section || !frame || latest.bound) return;
+    latest.bound = true;
+    latest.pageSize = latestPageSize();
+    bindLatestSize();
+    var savedOpen = true;
+    try { savedOpen = localStorage.getItem(STORAGE.latestOpen) !== "0"; } catch (error) {}
+    latestSetOpen(savedOpen, false);
+    var toggle = document.getElementById("latestToggle");
+    if (toggle) {
+      toggle.addEventListener("click", function () {
+        latestSetOpen(toggle.getAttribute("aria-expanded") !== "true", true);
+      });
+    }
+    var prev = document.getElementById("latestPrev");
+    var next = document.getElementById("latestNext");
+    if (prev) prev.addEventListener("click", function () { latestGo(-1); });
+    if (next) next.addEventListener("click", function () { latestGo(1); });
+    var tickerHost = document.getElementById("latestTicker");
+    if (tickerHost) {
+      function pauseTicker() {
+        if (!window.matchMedia("(hover: hover) and (pointer: fine)").matches) return;
+        clearLatestTickerTimer();
+      }
+      function resumeTicker() {
+        scheduleLatestTicker();
+      }
+      bindLatestTickerSwipe(tickerHost);
+      tickerHost.addEventListener("mouseenter", pauseTicker);
+      tickerHost.addEventListener("focusin", pauseTicker);
+      tickerHost.addEventListener("mouseleave", resumeTicker);
+      tickerHost.addEventListener("focusout", function () {
+        setTimeout(function () {
+          if (!tickerHost.contains(document.activeElement)) resumeTicker();
+        }, 0);
+      });
+    }
+    section.addEventListener("click", function (event) {
+      var retry = event.target.closest("[data-latest-retry]");
+      if (retry) {
+        if (retry.getAttribute("data-latest-retry") === "more") {
+          latest.moreError = false;
+          loadLatestMore();
+          return;
+        }
+        loadLatestPosts();
+        return;
+      }
+      if (event.target.closest("a[href], button, input, textarea, select, .latest-nav")) return;
+      var button = document.getElementById("latestToggle");
+      if (!button) return;
+      latestSetOpen(button.getAttribute("aria-expanded") !== "true", true);
+    });
+    frame.addEventListener("keydown", function (event) {
+      if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
+      event.preventDefault();
+      latestGo(event.key === "ArrowRight" ? 1 : -1);
+    });
+    var scrollTimer = 0;
+    frame.addEventListener("scroll", function () {
+      clearTimeout(scrollTimer);
+      scrollTimer = setTimeout(onLatestSettle, 80);
+    }, { passive: true });
+    if ("onscrollend" in frame) frame.addEventListener("scrollend", onLatestSettle);
+    bindLatestDrag(frame);
+    frame.addEventListener("wheel", function (event) {
+      if (Math.abs(event.deltaX) < 28 || Math.abs(event.deltaX) <= Math.abs(event.deltaY)) return;
+      if (event.deltaX < 0) return;
+      if (frame.scrollLeft < frame.scrollWidth - frame.clientWidth - 2) return;
+      if (latestPullNext()) event.preventDefault();
+    }, { passive: false });
+    var query = window.matchMedia("(max-width: 767px)");
+    if (query.addEventListener) query.addEventListener("change", latestRegroup);
+    else if (query.addListener) query.addListener(latestRegroup);
+    window.addEventListener("resize", function () {
+      clearTimeout(latest.resizeTimer);
+      latest.resizeTimer = setTimeout(latestRegroup, 150);
+    });
+    if (!latest.timer) latest.timer = setInterval(tickLatestTimes, 30000);
+  }
+
   function initDashboard() {
     if (typeof CharacterParser === "undefined") {
       showBootError("parser.js를 불러오지 못했습니다.");
@@ -3624,6 +4940,8 @@
     bindDashboard();
     paintShellPlaceholders();
     revealDashboard();
+    bindLatestPosts();
+    loadLatestPosts();
     loadAndRender();
     startCountWatch();
   }

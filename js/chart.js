@@ -171,8 +171,22 @@
       else if (max === g) h = ((b - r) / span + 2) / 6;
       else h = ((r - g) / span + 4) / 6;
     }
-    l = Math.max(0.08, l - step);
-    if (saturate) s = Math.min(1, s + 0.06);
+    var deg = h * 360;
+    // 명도만 올리면 하양이 섞여 탁해진다. 노랑은 채도 100%인 맑은 색으로 둔다.
+    // 1등은 같은 노랑과 구분되도록 맑은 주황으로 당긴다.
+    if (saturate === "clear") {
+      if (deg < 30 || deg > 62) return hex;
+      h = (deg + (42 - deg) * 0.8) / 360;
+      s = 1;
+      l = 0.54;
+    } else if (saturate === "gold" && deg >= 30 && deg <= 62) {
+      h = (deg + (22 - deg) * 0.85) / 360;
+      s = 1;
+      l = 0.52;
+    } else {
+      l = Math.max(0.08, l - step);
+      if (saturate === true) s = Math.min(1, s + 0.06);
+    }
     function channel(p, q, t) {
       if (t < 0) t += 1;
       if (t > 1) t -= 1;
@@ -193,25 +207,16 @@
     return "#" + byte(rr) + byte(gg) + byte(bb);
   }
 
-  function glassTheme() {
-    return document.documentElement.getAttribute("data-theme") === "glass";
-  }
-
   function axisColor(fallback) {
-    return glassTheme() ? "rgba(28,30,38,0.62)" : fallback;
+    return fallback;
   }
 
   function gridColor() {
-    return glassTheme() ? "rgba(28,30,38,0.14)" : "#2c2c3a";
+    return "#2c2c3a";
   }
 
-  // 글래시에서는 막대와 선이 배경을 비치게 한다. 기본 테마 색은 그대로다.
-  function tint(hex, alpha) {
-    if (!glassTheme()) return hex;
-    var matched = /^#([0-9a-f]{6})$/i.exec(String(hex || ""));
-    if (!matched) return hex;
-    var n = parseInt(matched[1], 16);
-    return "rgba(" + ((n >> 16) & 255) + "," + ((n >> 8) & 255) + "," + (n & 255) + "," + alpha + ")";
+  function tint(hex) {
+    return hex;
   }
 
   // 값이 가장 큰 막대만 진하게. 0뿐이면 1등을 두지 않고, 동점이면 함께 진하게 한다.
@@ -223,8 +228,11 @@
     });
     return rows.map(function (row) {
       var color = colorOf(row);
-      if (best > 0 && chartNumber(row, field) === best) {
-        color = field === "todayVisitors" ? deepenColor(color, 0.08, false) : deepenColor(color, 0.12, true);
+      var leader = best > 0 && chartNumber(row, field) === best;
+      if (field === "todayVisitors") {
+        color = leader ? deepenColor(color, 0.04, "gold") : deepenColor(color, 0, "clear");
+      } else if (leader) {
+        color = deepenColor(color, 0.12, true);
       }
       return tint(color, 0.5);
     });
@@ -276,10 +284,10 @@
           plugins: {
             legend: { display: false },
             tooltip: {
-              backgroundColor: glassTheme() ? "rgba(255,255,255,0.92)" : "#11111d",
-              titleColor: glassTheme() ? "#1c1e26" : "#ededf3",
-              bodyColor: glassTheme() ? "rgba(28,30,38,0.78)" : "#c3c3cc",
-              borderColor: glassTheme() ? "rgba(255,255,255,0.8)" : "#2c2c3a",
+              backgroundColor: "#11111d",
+              titleColor: "#ededf3",
+              bodyColor: "#c3c3cc",
+              borderColor: "#2c2c3a",
               borderWidth: 1,
               callbacks: {
                 label: function (item) { return spec.label + " " + deps.formatNumber(item.parsed.y); }
@@ -550,7 +558,7 @@
     ctx.textAlign = "left";
     ctx.textBaseline = "middle";
     ctx.lineWidth = size <= 8 ? 2 : 3;
-    ctx.strokeStyle = glassTheme() ? "rgba(255,255,255,0.94)" : "#11111d";
+    ctx.strokeStyle = "#11111d";
     ctx.lineJoin = "round";
     items.forEach(function (item) {
       var y = Math.max(item.w + 2, item.bottom);
@@ -626,7 +634,7 @@
     ctx.textAlign = "center";
     ctx.textBaseline = "bottom";
     ctx.lineWidth = 3;
-    ctx.strokeStyle = glassTheme() ? "rgba(255,255,255,0.94)" : "#11111d";
+    ctx.strokeStyle = "#11111d";
     ctx.lineJoin = "round";
     items.slice().sort(function (a, b) { return b.y - a.y; }).forEach(function (item) {
       var y = Math.max(size + 1, item.y);
@@ -860,10 +868,10 @@
               labels: { color: axisColor("#c3c3cc"), boxWidth: 12, boxHeight: 12, padding: 14, font: { size: 12 } }
             },
             tooltip: {
-              backgroundColor: glassTheme() ? "rgba(255,255,255,0.92)" : "#11111d",
-              titleColor: glassTheme() ? "#1c1e26" : "#ededf3",
-              bodyColor: glassTheme() ? "rgba(28,30,38,0.78)" : "#c3c3cc",
-              borderColor: glassTheme() ? "rgba(255,255,255,0.8)" : "#2c2c3a",
+              backgroundColor: "#11111d",
+              titleColor: "#ededf3",
+              bodyColor: "#c3c3cc",
+              borderColor: "#2c2c3a",
               borderWidth: 1,
               callbacks: {
                 title: function (items) {
@@ -1028,7 +1036,7 @@
     ctx.moveTo(edgeX, edgeY);
     ctx.lineTo(joinX, textY);
     ctx.stroke();
-    ctx.fillStyle = glassTheme() ? "rgba(255,255,255,0.9)" : "rgba(17, 17, 29, 0.94)";
+    ctx.fillStyle = "rgba(17, 17, 29, 0.94)";
     fillRounded(ctx, boxLeft, boxTop, boxW + 10, 32, 7);
     drawShareText(
       ctx,
@@ -1036,8 +1044,8 @@
       textX,
       textY,
       side > 0 ? "left" : (side < 0 ? "right" : "center"),
-      glassTheme() ? "#1c1e26" : "#ededf3",
-      glassTheme() ? "rgba(28,30,38,0.72)" : "#c3c3cc"
+      "#ededf3",
+      "#c3c3cc"
     );
   }
 
@@ -1130,7 +1138,7 @@
           datasets: [{
             data: rows.map(function (row) { return row.totalVisitors; }),
             backgroundColor: rows.map(function (row) { return tint(lineColor(row.id), 0.62); }),
-            borderColor: glassTheme() ? "rgba(255,255,255,0.72)" : "#11111d",
+            borderColor: "#11111d",
             borderWidth: 2,
             hoverOffset: 0
           }]
@@ -1143,10 +1151,10 @@
           plugins: {
             legend: { display: false },
             tooltip: {
-              backgroundColor: glassTheme() ? "rgba(255,255,255,0.92)" : "#11111d",
-              titleColor: glassTheme() ? "#1c1e26" : "#ededf3",
-              bodyColor: glassTheme() ? "rgba(28,30,38,0.78)" : "#c3c3cc",
-              borderColor: glassTheme() ? "rgba(255,255,255,0.8)" : "#2c2c3a",
+              backgroundColor: "#11111d",
+              titleColor: "#ededf3",
+              bodyColor: "#c3c3cc",
+              borderColor: "#2c2c3a",
               borderWidth: 1,
               callbacks: {
                 label: function (item) {
@@ -1206,7 +1214,7 @@
     var existing = Chart.getChart(canvas);
     canvas.$dayKeys = keys;
     canvas.$pointFont = 11;
-    canvas.$pointInk = glassTheme() ? "rgba(28,30,38,0.78)" : "#ededf3";
+    canvas.$pointInk = "#ededf3";
     if (existing) {
       existing.$weekKeys = keys;
       existing.$dayKeys = keys;
@@ -1251,10 +1259,10 @@
           plugins: {
             legend: { display: false },
             tooltip: {
-              backgroundColor: glassTheme() ? "rgba(255,255,255,0.92)" : "#11111d",
-              titleColor: glassTheme() ? "#1c1e26" : "#ededf3",
-              bodyColor: glassTheme() ? "rgba(28,30,38,0.78)" : "#c3c3cc",
-              borderColor: glassTheme() ? "rgba(255,255,255,0.8)" : "#2c2c3a",
+              backgroundColor: "#11111d",
+              titleColor: "#ededf3",
+              bodyColor: "#c3c3cc",
+              borderColor: "#2c2c3a",
               borderWidth: 1,
               callbacks: {
                 title: function (items) {

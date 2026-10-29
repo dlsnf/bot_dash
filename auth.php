@@ -68,19 +68,62 @@ function botdash_cookie_path() {
     return rtrim($dir, "/") . "/";
 }
 
+function botdash_session_lifetime() {
+    return 60 * 60 * 24 * 30;
+}
+
+function botdash_session_should_touch($stamp, $now) {
+    $stamp = (int) $stamp;
+    if ($stamp <= 0) return true;
+    return ((int) $now - $stamp) >= 86400;
+}
+
+function botdash_session_dir() {
+    $override = getenv("BOTDASH_SESSION_DIR");
+    if (is_string($override) && $override !== "") return $override;
+    // 시스템 세션 청소는 php.ini 의 짧은 수명으로 /var/lib/php/session 만 지운다.
+    // 쿠키는 30일인데 그 파일이 먼저 사라지면 한 달 안에 다시 로그인을 요구한다.
+    $dir = __DIR__ . "/data/sessions";
+    if (!is_dir($dir)) @mkdir($dir, 0700, true);
+    if (is_dir($dir) && is_writable($dir)) return $dir;
+    return "";
+}
+
 function botdash_session_start() {
     if (session_status() === PHP_SESSION_ACTIVE) return;
+    $life = botdash_session_lifetime();
+    $dir = botdash_session_dir();
+    if ($dir !== "") session_save_path($dir);
+    ini_set("session.gc_maxlifetime", (string) $life);
+    ini_set("session.cookie_lifetime", (string) $life);
     $https = (!empty($_SERVER["HTTPS"]) && $_SERVER["HTTPS"] !== "off")
         || (isset($_SERVER["SERVER_PORT"]) && (int) $_SERVER["SERVER_PORT"] === 443);
     session_name("botdash");
     session_set_cookie_params(array(
-        "lifetime" => 60 * 60 * 24 * 30,
+        "lifetime" => $life,
         "path" => botdash_cookie_path(),
         "httponly" => true,
         "samesite" => "Lax",
         "secure" => $https
     ));
     session_start();
+}
+
+function botdash_touch_session() {
+    $now = time();
+    $stamp = isset($_SESSION["botdash_seen"]) ? (int) $_SESSION["botdash_seen"] : 0;
+    if (!botdash_session_should_touch($stamp, $now)) return;
+    $_SESSION["botdash_seen"] = $now;
+    if (headers_sent()) return;
+    $params = session_get_cookie_params();
+    setcookie(session_name(), session_id(), array(
+        "expires" => $now + botdash_session_lifetime(),
+        "path" => isset($params["path"]) && is_string($params["path"]) && $params["path"] !== "" ? $params["path"] : "/",
+        "domain" => isset($params["domain"]) ? $params["domain"] : "",
+        "secure" => !empty($params["secure"]),
+        "httponly" => true,
+        "samesite" => isset($params["samesite"]) && is_string($params["samesite"]) && $params["samesite"] !== "" ? $params["samesite"] : "Lax"
+    ));
 }
 
 function botdash_end_session() {
@@ -118,6 +161,7 @@ function botdash_logged_in() {
             $ok = hash_equals(botdash_mark($user, $pass), (string) $_SESSION["botdash_mark"]);
         }
     }
+    if ($ok) botdash_touch_session();
     session_write_close();
     return $ok;
 }

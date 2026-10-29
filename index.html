@@ -13,15 +13,16 @@
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='4' fill='%235266eb'/%3E%3C/svg%3E">
   <script>
     (function () {
+      var latestMobile = window.matchMedia("(max-width: 767px)").matches;
+      var latestBoot = latestMobile ? 3 : 5;
       try {
-        var savedTheme = localStorage.getItem("botdash_theme");
-        var theme = savedTheme === "glass" ? "glass" : "classic";
-        document.documentElement.setAttribute("data-theme", theme);
-        var themeMeta = document.querySelector('meta[name="theme-color"]');
-        if (themeMeta) themeMeta.setAttribute("content", theme === "glass" ? "#e6dfd4" : "#07070f");
-      } catch (e) {
-        document.documentElement.setAttribute("data-theme", "classic");
-      }
+        if (localStorage.getItem("botdash_latest_open") === "0") {
+          document.documentElement.setAttribute("data-latest", "closed");
+        }
+        var latestSaved = parseInt(localStorage.getItem(latestMobile ? "botdash_latest_size_m" : "botdash_latest_size"), 10);
+        if (latestSaved >= 1 && latestSaved <= 10) latestBoot = latestSaved;
+      } catch (e) {}
+      document.documentElement.setAttribute("data-latest-boot", String(latestBoot));
       if (window.matchMedia("(hover: none) and (pointer: coarse)").matches) {
         var viewport = document.querySelector('meta[name="viewport"]');
         if (viewport) viewport.setAttribute("content", "width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no");
@@ -47,8 +48,7 @@
     })();
   </script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" integrity="sha384-PPIZEGYM1v8zp5Py7UjFb79S58UeqCL9pYVnVPURKEqvioPROaVAJKKLzvH2rDnI" crossorigin="anonymous">
-  <link rel="stylesheet" href="css/style.css?v=32">
-  <link rel="stylesheet" href="css/theme-glass.css?v=6">
+  <link rel="stylesheet" href="css/style.css?v=60">
 </head>
 <body data-page="dashboard" class="is-booting">
   <a class="skip" href="#cards">캐릭터 목록으로 건너뛰기</a>
@@ -113,10 +113,6 @@
       <div id="toolPanel" class="tool-panel">
         <div class="tool-panel-inner">
           <div class="tool-row">
-            <div class="theme-switch" role="group" aria-label="화면 테마">
-              <button type="button" data-theme-choice="classic" aria-pressed="true">기본</button>
-              <button type="button" data-theme-choice="glass" aria-pressed="false">글래시</button>
-            </div>
             <div class="search">
               <label class="sr-only" for="searchInput">캐릭터 검색</label>
               <input id="searchInput" type="search" placeholder="이름, 별명, 계정, 블로그 검색" autocomplete="off" enterkeyhint="search">
@@ -139,6 +135,39 @@
                 <option value="posts">글 수 많은 순</option>
               </select>
             </label>
+            <div class="latest-size" role="group" aria-label="최근 게시물 표기 개수">
+              <span class="latest-size-label"><span class="latest-title-full">최근 게시물</span><span class="latest-title-short">최근</span></span>
+              <label class="latest-size-field">
+                <span>데스크톱</span>
+                <select id="latestSizeDesktop" aria-label="데스크톱 최근 게시물 개수">
+                  <option value="1">1개</option>
+                  <option value="2">2개</option>
+                  <option value="3">3개</option>
+                  <option value="4">4개</option>
+                  <option value="5" selected>5개</option>
+                  <option value="6">6개</option>
+                  <option value="7">7개</option>
+                  <option value="8">8개</option>
+                  <option value="9">9개</option>
+                  <option value="10">10개</option>
+                </select>
+              </label>
+              <label class="latest-size-field">
+                <span>모바일</span>
+                <select id="latestSizeMobile" aria-label="모바일 최근 게시물 개수">
+                  <option value="1">1개</option>
+                  <option value="2">2개</option>
+                  <option value="3" selected>3개</option>
+                  <option value="4">4개</option>
+                  <option value="5">5개</option>
+                  <option value="6">6개</option>
+                  <option value="7">7개</option>
+                  <option value="8">8개</option>
+                  <option value="9">9개</option>
+                  <option value="10">10개</option>
+                </select>
+              </label>
+            </div>
             <!-- <button type="button" id="refreshBtn" class="btn"><i class="fa-solid fa-rotate-right" aria-hidden="true"></i> 새로고침</button> -->
             <button type="button" id="exportBtn" class="btn" disabled><i class="fa-solid fa-download" aria-hidden="true"></i> 내보내기</button>
           </div>
@@ -172,6 +201,49 @@
       <p id="statErrors" class="metric-sub tab-errors" hidden></p>
       <p id="resultInfo" class="sr-only" aria-live="polite"></p>
       <section id="cards" role="tabpanel" aria-labelledby="tabCards" aria-label="캐릭터">
+        <section id="latestPosts" class="latest is-loading" aria-busy="true" aria-label="최근 게시물">
+          <div class="latest-head">
+            <h2 id="latestHeading"><span class="skeleton latest-title-skel" aria-hidden="true"></span><span class="latest-title-full">최근 게시물</span><span class="latest-title-short">최근</span></h2>
+            <span class="latest-rule" aria-hidden="true"></span>
+            <div id="latestTicker" class="latest-ticker">
+              <div class="latest-ticker-window">
+                <div class="latest-ticker-row is-skel" aria-hidden="true">
+                  <span class="skeleton latest-ticker-sk-avatar"></span>
+                  <span class="skeleton latest-ticker-sk-icon"></span>
+                  <span class="skeleton latest-ticker-sk-title"></span>
+                  <span class="skeleton latest-ticker-sk-time"></span>
+                </div>
+              </div>
+            </div>
+            <div class="latest-nav">
+              <button type="button" id="latestPrev" class="latest-arrow" aria-label="이전 게시물" disabled><i class="fa-solid fa-chevron-left" aria-hidden="true"></i></button>
+              <span id="latestPage" class="latest-page-label" aria-hidden="true">1 / 1</span>
+              <button type="button" id="latestNext" class="latest-arrow" aria-label="다음 게시물"><i class="fa-solid fa-chevron-right" aria-hidden="true"></i></button>
+            </div>
+            <button type="button" id="latestToggle" class="latest-toggle" aria-expanded="true" aria-controls="latestBody" aria-label="최근 게시물 접기">
+              <svg class="latest-chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6 L8 10 L12 6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+            </button>
+          </div>
+          <div id="latestBody" class="latest-body">
+            <div id="latestViewport" class="latest-viewport" tabindex="0">
+              <div id="latestTrack" class="latest-track">
+                <div class="latest-page is-boot" aria-hidden="true">
+                  <div class="latest-item is-skel"><span class="skeleton latest-sk-avatar"></span><span class="latest-sk-lines"><span class="skeleton latest-sk-line"></span><span class="skeleton latest-sk-line short"></span></span></div>
+                  <div class="latest-item is-skel"><span class="skeleton latest-sk-avatar"></span><span class="latest-sk-lines"><span class="skeleton latest-sk-line"></span><span class="skeleton latest-sk-line short"></span></span></div>
+                  <div class="latest-item is-skel"><span class="skeleton latest-sk-avatar"></span><span class="latest-sk-lines"><span class="skeleton latest-sk-line"></span><span class="skeleton latest-sk-line short"></span></span></div>
+                  <div class="latest-item is-skel"><span class="skeleton latest-sk-avatar"></span><span class="latest-sk-lines"><span class="skeleton latest-sk-line"></span><span class="skeleton latest-sk-line short"></span></span></div>
+                  <div class="latest-item is-skel"><span class="skeleton latest-sk-avatar"></span><span class="latest-sk-lines"><span class="skeleton latest-sk-line"></span><span class="skeleton latest-sk-line short"></span></span></div>
+                  <div class="latest-item is-skel"><span class="skeleton latest-sk-avatar"></span><span class="latest-sk-lines"><span class="skeleton latest-sk-line"></span><span class="skeleton latest-sk-line short"></span></span></div>
+                  <div class="latest-item is-skel"><span class="skeleton latest-sk-avatar"></span><span class="latest-sk-lines"><span class="skeleton latest-sk-line"></span><span class="skeleton latest-sk-line short"></span></span></div>
+                  <div class="latest-item is-skel"><span class="skeleton latest-sk-avatar"></span><span class="latest-sk-lines"><span class="skeleton latest-sk-line"></span><span class="skeleton latest-sk-line short"></span></span></div>
+                  <div class="latest-item is-skel"><span class="skeleton latest-sk-avatar"></span><span class="latest-sk-lines"><span class="skeleton latest-sk-line"></span><span class="skeleton latest-sk-line short"></span></span></div>
+                  <div class="latest-item is-skel"><span class="skeleton latest-sk-avatar"></span><span class="latest-sk-lines"><span class="skeleton latest-sk-line"></span><span class="skeleton latest-sk-line short"></span></span></div>
+                </div>
+              </div>
+            </div>
+            <p id="latestStatus" class="sr-only" aria-live="polite"></p>
+          </div>
+        </section>
         <div id="cardGrid" class="card-grid" aria-busy="true">
           <article class="card skeleton-card" aria-hidden="true"><div class="skeleton sk-avatar"></div><div class="skeleton sk-line"></div><div class="skeleton sk-num"></div><div class="skeleton sk-line short"></div></article>
           <article class="card skeleton-card" aria-hidden="true"><div class="skeleton sk-avatar"></div><div class="skeleton sk-line"></div><div class="skeleton sk-num"></div><div class="skeleton sk-line short"></div></article>
@@ -243,8 +315,8 @@
   <script src="js/config.js"></script>
   <script src="js/parser.js"></script>
   <script src="js/reel.js"></script>
-  <script src="js/chart.js?v=23"></script>
+  <script src="js/chart.js?v=29"></script>
   <script src="js/login.js?v=2"></script>
-  <script src="js/app.js?v=33"></script>
+  <script src="js/app.js?v=61"></script>
 </body>
 </html>
