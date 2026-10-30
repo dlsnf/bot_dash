@@ -3,7 +3,8 @@
  * 로그인한 브라우저에 최신 글을 날짜순으로 돌려준다.
  * 캐릭터 마크다운의 네이버·티스토리·Blogger 피드만 받는다.
  * offset, limit 으로 잘라 내고, 모아 둔 목록은 90초 동안 다시 쓴다.
- * 화면은 모바일에서 3개, 그 외에는 5개씩 넘긴다. 처음에는 두 쪽, 그 다음부터는 한 쪽이다.
+ * 화면의 한 열은 1–10개다. 카드가 4열 이상이면 두 열이라 한 쪽이 그 두 배다.
+ * 처음에는 두 쪽, 그 다음부터는 한 쪽이다. 한 요청은 30개를 넘기지 않는다.
  */
 if (!defined("BOTDASH_CONTENT_LIBRARY")) define("BOTDASH_CONTENT_LIBRARY", true);
 if (!defined("BOTDASH_PROFILE_LIBRARY")) define("BOTDASH_PROFILE_LIBRARY", true);

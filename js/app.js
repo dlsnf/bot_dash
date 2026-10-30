@@ -92,7 +92,8 @@
     cardColumns: 0,
     cardMoving: false,
     cardMoveGen: 0,
-    countsShown: false
+    countsShown: false,
+    accountPrefsReady: true
   };
 
   if (!window.BotDashReel || !window.BotDashChart || !window.BotDashLogin) {
@@ -2831,7 +2832,9 @@
   }
 
   // 세션이 확인되면 본문을 연다. 아직 없는 숫자만 칸 스켈레톤으로 남긴다.
+  // 대시보드는 아이디에 저장된 최근 게시물 설정을 받은 뒤에 연다.
   function revealDashboard() {
+    if (document.body.dataset.page === "dashboard" && !state.accountPrefsReady) return;
     if (!document.body.classList.contains("is-booting")) return;
     if (state.bootTimer) {
       clearTimeout(state.bootTimer);
@@ -3604,8 +3607,9 @@
     else if (mobileQuery.addListener) mobileQuery.addListener(onViewport);
   }
 
-  // 최근 글. 한 쪽에 보이는 개수는 필터에 저장하고, 데스크톱과 모바일은 따로다. 기본은 5개와 3개.
-  // 처음 두 쪽을 받고, 다음 쪽으로 넘어갈 때 한 쪽을 더 받는다.
+  // 최근 글. 저장하는 개수는 한 열이고, 데스크톱과 모바일은 따로다. 기본은 5개와 3개.
+  // 카드가 4열 이상이면 목록도 두 열이라 한 쪽은 그 두 배다.
+  // 처음 두 쪽을 받고, 다음 쪽으로 넘어갈 때 한 쪽을 더 받는다. 한 요청은 30개까지다.
   var LATEST_SIZE_MAX = 10;
   var LATEST_PAGE_MS = 600;
   // 새 페이지가 도착한 뒤에 스켈레톤을 유지하는 시간.
@@ -3641,7 +3645,8 @@
     revealFrom: -1,
     skeletonHoldUntil: 0,
     pendingReveal: null,
-    sizeMotion: 0
+    sizeMotion: 0,
+    filling: false
   };
 
   function latestStoredSize(mobile) {
@@ -3650,8 +3655,31 @@
     return mobile ? 3 : 5;
   }
 
-  function latestPageSize() {
+  // 카드 4열부터 최근 게시물은 두 열이다. 저장 값은 한 열 개수다.
+  function latestColumns() {
+    return cardColumnCount() >= 4 ? 2 : 1;
+  }
+
+  function latestPerColumn() {
     return latestStoredSize(isMobileView());
+  }
+
+  function latestPageSize() {
+    return latestPerColumn() * latestColumns();
+  }
+
+  function syncLatestBoot(per) {
+    var count = per * latestColumns();
+    document.documentElement.style.setProperty("--latest-rows", String(per));
+    document.documentElement.setAttribute("data-latest-boot", String(Math.min(10, count)));
+  }
+
+  function latestDecoratePage(page, count) {
+    var cols = latestColumns();
+    var per = latestPerColumn();
+    var rows = cols > 1 ? Math.max(1, Math.min(per, count)) : per;
+    page.style.setProperty("--latest-rows", String(rows));
+    if (cols > 1 && count > rows) page.classList.add("is-cols");
   }
 
   function clearLatestBodySize() {
@@ -3700,25 +3728,7 @@
       withLatestHeight(function () { loadLatestPosts(); });
       return;
     }
-    var next = latestPageSize();
-    var gap = next - latest.posts.length;
-    if (gap > 0 && latest.posts.length && latest.more && !latest.loading) {
-      var gen = latest.gen;
-      latest.loading = true;
-      fetchLatest(latest.posts.length, Math.min(30, gap)).then(function (data) {
-        if (gen !== latest.gen) return;
-        latestAdd(data.posts);
-        latest.loading = false;
-        latest.more = !!(data.more && data.posts.length);
-        withLatestHeight(function () { latestRegroup(); });
-      }).catch(function () {
-        if (gen !== latest.gen) return;
-        latest.loading = false;
-        withLatestHeight(function () { latestRegroup(); });
-      });
-      return;
-    }
-    withLatestHeight(function () { latestRegroup(); });
+    latestRegroup({ animate: true });
   }
 
   function bindLatestSize() {
@@ -3735,8 +3745,9 @@
           return;
         }
         storageSet(pair[1] ? STORAGE.latestSizeMobile : STORAGE.latestSize, String(next));
+        saveAccountPrefs();
         if (pair[1] !== isMobileView()) return;
-        document.documentElement.setAttribute("data-latest-boot", String(next));
+        syncLatestBoot(next);
         applyCurrentLatestSize();
       });
     });
@@ -3753,7 +3764,7 @@
   }
 
   function latestCanLoadMore() {
-    return !!(latest.more && !latest.loading && !latest.moreError && latest.posts.length);
+    return !!(latest.more && !latest.loading && !latest.filling && !latest.moreError && latest.posts.length);
   }
 
   function latestOnLastPage() {
@@ -3936,6 +3947,7 @@
 
   function latestSkeletonPage() {
     var page = h("div", { class: "latest-page", "aria-busy": "true", "aria-label": "게시물을 불러오는 중" });
+    latestDecoratePage(page, latest.pageSize);
     for (var i = 0; i < latest.pageSize; i++) {
       page.appendChild(h("div", { class: "latest-item is-skel", "aria-hidden": "true" },
         h("span", { class: "skeleton latest-sk-avatar" }),
@@ -3949,7 +3961,7 @@
   }
 
   function latestMessagePage(message, retry) {
-    var page = h("div", { class: "latest-page" });
+    var page = h("div", { class: "latest-page is-note" });
     var row = h("p", { class: "latest-empty", text: message });
     if (retry) {
       row.appendChild(document.createTextNode(" "));
@@ -3966,6 +3978,7 @@
 
   function latestDataPage(posts, number, reveal) {
     var page = h("div", { class: "latest-page" + (reveal ? " is-reveal" : ""), role: "group", "aria-label": "최근 게시물 " + number + "쪽" });
+    latestDecoratePage(page, posts.length);
     posts.forEach(function (post) { page.appendChild(latestItem(post)); });
     return page;
   }
@@ -4037,7 +4050,13 @@
     latestFitPageWidths();
     if (left) frame.scrollLeft = left;
     section.setAttribute("aria-busy", latest.loading ? "true" : "false");
+    var revealList = section.classList.contains("is-loading") && !(latest.loading && !latest.posts.length);
     section.classList.toggle("is-loading", !!(latest.loading && !latest.posts.length));
+    if (revealList && !reducedMotion && !section.classList.contains("is-collapsed") && !section.classList.contains("is-opening") && !section.classList.contains("is-closing")) {
+      section.classList.remove("is-list-in");
+      void section.offsetWidth;
+      section.classList.add("is-list-in");
+    }
     syncLatestNav();
     syncLatestTicker();
   }
@@ -4050,6 +4069,28 @@
       seen[post.url] = true;
       latest.posts.push(post);
     });
+  }
+
+  // 한 주소는 30개까지다. 더 필요하면 offset 을 올려 이어서 받는다.
+  function pullLatest(gen, offset, want) {
+    var collected = [];
+    var more = true;
+    function step() {
+      if (gen !== latest.gen) return Promise.resolve(null);
+      if (!more || collected.length >= want) return Promise.resolve({ posts: collected, more: more });
+      var limit = Math.min(30, want - collected.length);
+      return fetchLatest(offset + collected.length, limit).then(function (data) {
+        if (gen !== latest.gen) return null;
+        data.posts.forEach(function (post) { collected.push(post); });
+        more = !!(data.more && data.posts.length);
+        return step();
+      }).catch(function (error) {
+        if (gen !== latest.gen) return null;
+        if (!collected.length) throw error;
+        return { posts: collected, more: true, failed: true };
+      });
+    }
+    return step();
   }
 
   function fetchLatest(offset, limit) {
@@ -4094,11 +4135,12 @@
     latest.tickerReady = false;
     latest.tickerFadePending = false;
     renderLatest();
-    fetchLatest(0, latestFetchLimit(0, latest.pageSize)).then(function (data) {
-      if (gen !== latest.gen) return;
+    pullLatest(gen, 0, latestFetchLimit(0, latest.pageSize)).then(function (data) {
+      if (!data || gen !== latest.gen) return;
       latest.loading = false;
       latest.posts = data.posts;
-      latest.more = data.more;
+      latest.more = !!data.more;
+      latest.moreError = !!data.failed;
       renderLatest();
       onLatestSettle();
     }).catch(function () {
@@ -4160,20 +4202,21 @@
     if (!latestCanLoadMore()) return false;
     var gen = latest.gen;
     var offset = latest.posts.length;
-    var limit = latestFetchLimit(offset, latest.pageSize);
+    var want = latestFetchLimit(offset, latest.pageSize);
     latest.skeletonHoldUntil = 0;
     latest.pendingReveal = null;
     latest.loading = true;
     latest.moreError = false;
     latestAppendSkeleton();
     announceLatest();
-    fetchLatest(offset, limit).then(function (data) {
+    pullLatest(gen, offset, want).then(function (data) {
       latestHoldSkeleton(function () {
-        if (gen !== latest.gen) return;
+        if (!data || gen !== latest.gen) return;
         var before = latest.posts.length;
         latestAdd(data.posts);
         latest.loading = false;
-        latest.more = latest.posts.length > before && data.more;
+        latest.more = latest.posts.length > before && !!data.more && !data.failed;
+        latest.moreError = !!data.failed;
         if (latest.posts.length > before) latest.revealFrom = before;
         renderLatest();
         onLatestSettle();
@@ -4302,6 +4345,7 @@
     }
     if (persist) {
       try { localStorage.setItem(STORAGE.latestOpen, open ? "1" : "0"); } catch (error) {}
+      saveAccountPrefs();
     }
     if (!open && section.contains(document.activeElement) && document.activeElement !== toggle) toggle.focus();
     if (!fadeClose) {
@@ -4581,13 +4625,36 @@
     frame.scrollLeft = index * frame.clientWidth;
   }
 
-  function latestRegroup() {
+  function latestFill(minCount, done) {
+    if (!latest.posts.length || latest.posts.length >= minCount || !latest.more || latest.loading || latest.filling) {
+      done();
+      return;
+    }
+    var gen = latest.gen;
+    var start = latest.posts.length;
+    latest.filling = true;
+    pullLatest(gen, start, minCount - start).then(function (data) {
+      latest.filling = false;
+      if (!data || gen !== latest.gen) return;
+      latestAdd(data.posts);
+      latest.more = !!(data.more && data.posts.length);
+      if (data.failed) latest.moreError = true;
+      done();
+    }).catch(function () {
+      latest.filling = false;
+      if (gen !== latest.gen) return;
+      done();
+    });
+  }
+
+  function latestRegroup(options) {
+    var animate = !!(options && options.animate);
+    syncLatestBoot(latestPerColumn());
+    if (latest.filling) return;
     var nextSize = latestPageSize();
     if (!latest.posts.length) {
-      if (nextSize !== latest.pageSize && latest.loading) {
-        latest.pageSize = nextSize;
-        renderLatest();
-      } else latest.pageSize = nextSize;
+      latest.pageSize = nextSize;
+      if (latest.loading) renderLatest();
       return;
     }
     if (nextSize === latest.pageSize) {
@@ -4597,11 +4664,24 @@
     }
     var frame = document.getElementById("latestViewport");
     var anchor = latestPageIndex() * latest.pageSize;
-    latest.pageSize = nextSize;
-    latest.index = Math.floor(anchor / nextSize);
-    renderLatest();
-    if (frame && frame.clientWidth) frame.scrollLeft = latest.index * frame.clientWidth;
-    onLatestSettle();
+    function apply() {
+      var size = latestPageSize();
+      if (size < 1) return;
+      latest.pageSize = size;
+      latest.index = Math.floor(anchor / size);
+      var paint = function () {
+        renderLatest();
+        if (frame && frame.clientWidth) frame.scrollLeft = latest.index * frame.clientWidth;
+        onLatestSettle();
+      };
+      if (animate) withLatestHeight(paint);
+      else paint();
+    }
+    if (nextSize > latest.posts.length && latest.more && !latest.loading) {
+      latestFill(nextSize, apply);
+      return;
+    }
+    apply();
   }
 
   function latestPullNext() {
@@ -4854,6 +4934,13 @@
     latest.bound = true;
     latest.pageSize = latestPageSize();
     bindLatestSize();
+    var latestBody = document.getElementById("latestBody");
+    if (latestBody) {
+      latestBody.addEventListener("animationend", function (event) {
+        if (event.target !== latestBody || event.animationName !== "tickerIn") return;
+        section.classList.remove("is-list-in");
+      });
+    }
     var savedOpen = true;
     try { savedOpen = localStorage.getItem(STORAGE.latestOpen) !== "0"; } catch (error) {}
     latestSetOpen(savedOpen, false);
@@ -4923,11 +5010,87 @@
     var query = window.matchMedia("(max-width: 767px)");
     if (query.addEventListener) query.addEventListener("change", latestRegroup);
     else if (query.addListener) query.addListener(latestRegroup);
+    var wideQuery = window.matchMedia("(min-width: 1720px)");
+    if (wideQuery.addEventListener) wideQuery.addEventListener("change", latestRegroup);
+    else if (wideQuery.addListener) wideQuery.addListener(latestRegroup);
     window.addEventListener("resize", function () {
       clearTimeout(latest.resizeTimer);
       latest.resizeTimer = setTimeout(latestRegroup, 150);
     });
     if (!latest.timer) latest.timer = setInterval(tickLatestTimes, 30000);
+  }
+
+  function accountPrefsPayload() {
+    var open = storageGet(STORAGE.latestOpen);
+    return {
+      latestOpen: open === "0" ? 0 : 1,
+      latestSize: latestStoredSize(false),
+      latestSizeMobile: latestStoredSize(true)
+    };
+  }
+
+  function saveAccountPrefs() {
+    fetch("prefs.php", {
+      method: "POST",
+      credentials: "same-origin",
+      cache: "no-store",
+      headers: { "Accept": "application/json", "Content-Type": "application/json" },
+      body: JSON.stringify(accountPrefsPayload())
+    }).catch(function () {});
+  }
+
+  function accountSize(value) {
+    if (typeof value !== "number" || !isFinite(value) || Math.floor(value) !== value) return null;
+    if (value < 1 || value > LATEST_SIZE_MAX) return null;
+    return value;
+  }
+
+  function applyAccountPrefs(data) {
+    if (!data || data.ok !== true) return;
+    var dirty = false;
+    var size = accountSize(data.latestSize);
+    var sizeMobile = accountSize(data.latestSizeMobile);
+    if (size !== null) storageSet(STORAGE.latestSize, String(size));
+    else if (storageGet(STORAGE.latestSize)) dirty = true;
+    if (sizeMobile !== null) storageSet(STORAGE.latestSizeMobile, String(sizeMobile));
+    else if (storageGet(STORAGE.latestSizeMobile)) dirty = true;
+    if (data.latestOpen === 0 || data.latestOpen === 1) {
+      storageSet(STORAGE.latestOpen, data.latestOpen ? "1" : "0");
+    } else {
+      var savedOpen = storageGet(STORAGE.latestOpen);
+      if (savedOpen === "0" || savedOpen === "1") dirty = true;
+    }
+    var desktopSize = document.getElementById("latestSizeDesktop");
+    var mobileSize = document.getElementById("latestSizeMobile");
+    if (desktopSize) desktopSize.value = String(latestStoredSize(false));
+    if (mobileSize) mobileSize.value = String(latestStoredSize(true));
+    syncLatestBoot(latestPerColumn());
+    if (dirty) saveAccountPrefs();
+  }
+
+  function loadAccountPrefs() {
+    var settled = false;
+    var request = fetch("prefs.php", {
+      credentials: "same-origin",
+      cache: "no-store",
+      headers: { "Accept": "application/json" }
+    }).then(function (response) {
+      if (!response.ok) return null;
+      return response.json();
+    }).then(function (data) {
+      if (settled) return;
+      applyAccountPrefs(data);
+    }).catch(function () {});
+    var timeout = new Promise(function (resolve) {
+      setTimeout(function () {
+        settled = true;
+        resolve();
+      }, 2000);
+    });
+    return Promise.race([
+      request.then(function () { settled = true; }, function () { settled = true; }),
+      timeout
+    ]).catch(function () {});
   }
 
   function initDashboard() {
@@ -4936,14 +5099,18 @@
       return;
     }
     captureFirstLoadToday();
+    state.accountPrefsReady = false;
     loadPrefs();
     bindDashboard();
     paintShellPlaceholders();
-    revealDashboard();
-    bindLatestPosts();
-    loadLatestPosts();
     loadAndRender();
     startCountWatch();
+    loadAccountPrefs().then(function () {
+      state.accountPrefsReady = true;
+      revealDashboard();
+      bindLatestPosts();
+      loadLatestPosts();
+    });
   }
 
   function missingDetail(message) {

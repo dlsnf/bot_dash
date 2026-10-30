@@ -14,6 +14,7 @@
   <script>
     (function () {
       var latestMobile = window.matchMedia("(max-width: 767px)").matches;
+      var latestWide = window.matchMedia("(min-width: 1720px)").matches;
       var latestBoot = latestMobile ? 3 : 5;
       try {
         if (localStorage.getItem("botdash_latest_open") === "0") {
@@ -22,7 +23,9 @@
         var latestSaved = parseInt(localStorage.getItem(latestMobile ? "botdash_latest_size_m" : "botdash_latest_size"), 10);
         if (latestSaved >= 1 && latestSaved <= 10) latestBoot = latestSaved;
       } catch (e) {}
-      document.documentElement.setAttribute("data-latest-boot", String(latestBoot));
+      document.documentElement.style.setProperty("--latest-rows", String(latestBoot));
+      var latestShown = latestWide ? Math.min(10, latestBoot * 2) : latestBoot;
+      document.documentElement.setAttribute("data-latest-boot", String(latestShown));
       if (window.matchMedia("(hover: none) and (pointer: coarse)").matches) {
         var viewport = document.querySelector('meta[name="viewport"]');
         if (viewport) viewport.setAttribute("content", "width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no");
@@ -48,7 +51,7 @@
     })();
   </script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" integrity="sha384-PPIZEGYM1v8zp5Py7UjFb79S58UeqCL9pYVnVPURKEqvioPROaVAJKKLzvH2rDnI" crossorigin="anonymous">
-  <link rel="stylesheet" href="css/style.css?v=60">
+  <link rel="stylesheet" href="css/style.css?v=62">
 </head>
 <body data-page="dashboard" class="is-booting">
   <a class="skip" href="#cards">캐릭터 목록으로 건너뛰기</a>
@@ -138,8 +141,8 @@
             <div class="latest-size" role="group" aria-label="최근 게시물 표기 개수">
               <span class="latest-size-label"><span class="latest-title-full">최근 게시물</span><span class="latest-title-short">최근</span></span>
               <label class="latest-size-field">
-                <span>데스크톱</span>
-                <select id="latestSizeDesktop" aria-label="데스크톱 최근 게시물 개수">
+                <span>데스크톱 한 열</span>
+                <select id="latestSizeDesktop" aria-label="데스크톱 최근 게시물 한 열 개수">
                   <option value="1">1개</option>
                   <option value="2">2개</option>
                   <option value="3">3개</option>
@@ -167,6 +170,7 @@
                   <option value="10">10개</option>
                 </select>
               </label>
+              <span class="latest-size-note">카드가 4열 이상이면 두 열로 나오고, 보이는 개수는 두 배입니다.</span>
             </div>
             <!-- <button type="button" id="refreshBtn" class="btn"><i class="fa-solid fa-rotate-right" aria-hidden="true"></i> 새로고침</button> -->
             <button type="button" id="exportBtn" class="btn" disabled><i class="fa-solid fa-download" aria-hidden="true"></i> 내보내기</button>
@@ -317,6 +321,6 @@
   <script src="js/reel.js"></script>
   <script src="js/chart.js?v=29"></script>
   <script src="js/login.js?v=2"></script>
-  <script src="js/app.js?v=61"></script>
+  <script src="js/app.js?v=63"></script>
 </body>
 </html>
