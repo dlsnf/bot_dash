@@ -3619,6 +3619,9 @@
   var LATEST_TICKER_EASE = "cubic-bezier(0.76, 0, 0.24, 1)";
   // 접힌 뉴스 티커가 한 줄을 보여 주는 시간은 이 값의 절반이다.
   var LATEST_TICKER_HOLD = 9000;
+  // 2열 티커에서 왼쪽 칸이 움직인 뒤 오른쪽 칸이 따라가기까지 기다리는 시간이다.
+  // 0이면 두 칸이 같이 움직인다. LATEST_TICKER_MS 와 같으면 왼쪽이 끝난 뒤에 오른쪽이 시작한다.
+  var LATEST_TICKER_STAGGER = 640;
   var latest = {
     posts: [],
     more: true,
@@ -3637,6 +3640,7 @@
     tickerIndex: 0,
     tickerTimer: 0,
     tickerBusy: false,
+    tickerSlide: 0,
     tickerReady: false,
     tickerFadePending: false,
     closeTimer: 0,
@@ -4538,6 +4542,32 @@
     return frame;
   }
 
+  // 2열은 칸마다 트랙을 두어 왼쪽이 먼저, 오른쪽이 나중에 넘어가게 한다.
+  function latestTickerLane(current, next) {
+    var lane = h("div", { class: "latest-ticker-lane" });
+    var track = h("div", { class: "latest-ticker-track" });
+    track.appendChild(latestTickerRow(current, false));
+    if (next) track.appendChild(latestTickerRow(next, true));
+    lane.appendChild(track);
+    return lane;
+  }
+
+  function latestTickerSplitFrame(index) {
+    var posts = latestTickerPosts();
+    var stride = latestTickerStride();
+    var frames = Math.ceil(posts.length / stride);
+    var frame = Math.floor(index / stride);
+    var nextFrame = (frame + 1) % frames;
+    var frameEl = h("div", { class: "latest-ticker-frame is-split" });
+    for (var i = 0; i < stride; i++) {
+      var current = posts[frame * stride + i];
+      if (!current) break;
+      var next = frames > 1 ? posts[nextFrame * stride + i] : null;
+      frameEl.appendChild(latestTickerLane(current, next || null));
+    }
+    return frameEl;
+  }
+
   function renderLatestTicker() {
     var host = document.getElementById("latestTicker");
     if (!host) return;
@@ -4551,15 +4581,19 @@
     latest.tickerIndex = latestTickerAlignIndex(latest.tickerIndex);
     var firstPaint = !latest.tickerReady;
     var windowEl = h("div", { class: "latest-ticker-window" });
-    var track = h("div", { class: "latest-ticker-track" });
-    track.appendChild(latestTickerFrame(latest.tickerIndex, false));
-    if (latestTickerFrames() > 1) {
-      var stride = latestTickerStride();
-      var frame = Math.floor(latest.tickerIndex / stride);
-      var next = ((frame + 1) % latestTickerFrames()) * stride;
-      track.appendChild(latestTickerFrame(next, true));
+    if (latestTickerStride() > 1) {
+      windowEl.appendChild(latestTickerSplitFrame(latest.tickerIndex));
+    } else {
+      var track = h("div", { class: "latest-ticker-track" });
+      track.appendChild(latestTickerFrame(latest.tickerIndex, false));
+      if (latestTickerFrames() > 1) {
+        var stride = latestTickerStride();
+        var frame = Math.floor(latest.tickerIndex / stride);
+        var next = ((frame + 1) % latestTickerFrames()) * stride;
+        track.appendChild(latestTickerFrame(next, true));
+      }
+      windowEl.appendChild(track);
     }
-    windowEl.appendChild(track);
     host.replaceChildren(windowEl);
     if (!firstPaint) return;
     latest.tickerReady = true;
@@ -4582,9 +4616,87 @@
     host.classList.add("is-in");
   }
 
+  function slideSplitTicker(delta, speed) {
+    var host = document.getElementById("latestTicker");
+    var frameEl = host && host.querySelector(".latest-ticker-frame.is-split");
+    var lanes = frameEl ? frameEl.querySelectorAll(".latest-ticker-lane") : [];
+    if (!frameEl || lanes.length < 2) return false;
+    var posts = latestTickerPosts();
+    var stride = latestTickerStride();
+    var frames = Math.ceil(posts.length / stride);
+    if (frames < 2 || !delta) return false;
+    var frame = Math.floor(latestTickerAlignIndex(latest.tickerIndex) / stride);
+    var step = delta > 0 ? 1 : -1;
+    var landed = ((frame + step + frames) % frames) * stride;
+    var order = step > 0 ? [0, 1] : [1, 0];
+    var queue = [];
+    order.forEach(function (laneIndex) {
+      if (!lanes[laneIndex] || !posts[landed + laneIndex]) return;
+      queue.push(laneIndex);
+    });
+    if (queue.length < 1) return false;
+    clearLatestTickerTimer();
+    if (reducedMotion) {
+      latest.tickerIndex = landed;
+      renderLatestTicker();
+      scheduleLatestTicker();
+      return true;
+    }
+    var slideId = (latest.tickerSlide || 0) + 1;
+    latest.tickerSlide = slideId;
+    latest.tickerBusy = true;
+    var ms = speed || LATEST_TICKER_MS;
+    var stagger = Math.max(0, LATEST_TICKER_STAGGER);
+    var pending = queue.length;
+    var finished = false;
+    function settle() {
+      if (slideId !== latest.tickerSlide || finished) return;
+      pending -= 1;
+      if (pending > 0) return;
+      finished = true;
+      latest.tickerBusy = false;
+      latest.tickerIndex = landed;
+      renderLatestTicker();
+      scheduleLatestTicker();
+    }
+    queue.forEach(function (laneIndex, orderIndex) {
+      setTimeout(function () {
+        if (slideId !== latest.tickerSlide) return;
+        var track = lanes[laneIndex].querySelector(".latest-ticker-track");
+        var row = track && track.firstElementChild;
+        var distance = row ? row.offsetHeight : 0;
+        var post = posts[landed + laneIndex];
+        if (!track || distance < 1 || !post) {
+          settle();
+          return;
+        }
+        var doneLane = false;
+        function done(event) {
+          if (event && event.target && event.target !== track) return;
+          if (doneLane) return;
+          doneLane = true;
+          settle();
+        }
+        if (step < 0) {
+          track.insertBefore(latestTickerRow(post, true), track.firstElementChild);
+          track.style.transition = "none";
+          track.style.transform = "translateY(" + (-distance) + "px)";
+          void track.offsetWidth;
+        }
+        track.addEventListener("transitionend", done);
+        setTimeout(done, ms + 280);
+        track.style.transition = "transform " + ms + "ms " + LATEST_TICKER_EASE;
+        void track.offsetWidth;
+        track.style.transform = step > 0 ? "translateY(" + (-distance) + "px)" : "translateY(0)";
+      }, orderIndex * stagger);
+    });
+    return true;
+  }
+
   function slideLatestTicker(delta, speed) {
     var host = document.getElementById("latestTicker");
     if (!host || latest.tickerBusy || !latestIsClosed()) return false;
+    if (latestTickerStride() > 1 && slideSplitTicker(delta, speed)) return true;
     var frames = latestTickerFrames();
     if (frames < 2 || !delta) return false;
     var track = host.querySelector(".latest-ticker-track");
@@ -4661,6 +4773,7 @@
   function syncLatestTicker() {
     var cols = latestTickerColumns();
     if (latest.tickerColumns !== cols) {
+      latest.tickerSlide = (latest.tickerSlide || 0) + 1;
       latest.tickerColumns = cols;
       latest.tickerBusy = false;
       clearLatestTickerTimer();
