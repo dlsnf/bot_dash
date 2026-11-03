@@ -3608,7 +3608,7 @@
   }
 
   // 최근 글. 저장하는 개수는 한 열이고, 데스크톱과 모바일은 따로다. 기본은 5개와 3개.
-  // 카드가 4열 이상이면 목록도 두 열이라 한 쪽은 그 두 배다.
+  // 카드가 2열 이상이면 목록은 두 열이라 한 쪽은 그 두 배다. 티커는 카드 3열부터 두 칸이다.
   // 처음 두 쪽을 받고, 다음 쪽으로 넘어갈 때 한 쪽을 더 받는다. 한 요청은 30개까지다.
   var LATEST_SIZE_MAX = 10;
   var LATEST_PAGE_MS = 600;
@@ -3617,10 +3617,8 @@
   // 접힌 티커가 다음 글로 넘어가는 데 걸리는 시간.
   var LATEST_TICKER_MS = 1100;
   var LATEST_TICKER_EASE = "cubic-bezier(0.76, 0, 0.24, 1)";
-  // 접힌 뉴스 티커가 한 글을 보여 주는 시간은 이 값의 절반이다.
+  // 접힌 뉴스 티커가 한 줄을 보여 주는 시간은 이 값의 절반이다.
   var LATEST_TICKER_HOLD = 9000;
-  // 접힌 뉴스 티커는 최근 글 5개만 돈다.
-  var LATEST_TICKER_KEEP = 5;
   var latest = {
     posts: [],
     more: true,
@@ -3655,9 +3653,14 @@
     return mobile ? 3 : 5;
   }
 
-  // 카드 4열부터 최근 게시물은 두 열이다. 저장 값은 한 열 개수다.
+  // 카드 2열부터 최근 게시물 목록은 두 열이다. 저장 값은 한 열 개수다.
   function latestColumns() {
-    return cardColumnCount() >= 4 ? 2 : 1;
+    return cardColumnCount() >= 2 ? 2 : 1;
+  }
+
+  // 접힌 티커는 카드가 3열 이상일 때만 두 칸이다.
+  function latestTickerColumns() {
+    return cardColumnCount() >= 3 ? 2 : 1;
   }
 
   function latestPerColumn() {
@@ -4416,15 +4419,38 @@
     return !!(section && section.classList.contains("is-collapsed"));
   }
 
+  // 티커가 도는 글 수는 펼친 목록의 첫 페이지와 같다.
   function latestTickerPosts() {
-    return latest.posts.slice(0, LATEST_TICKER_KEEP);
+    return latest.posts.slice(0, latestPageSize());
   }
 
-  // 접힌 티커에서 지금 보이는 글. 슬라이드가 절반을 넘기면 올라오는 글이다.
+  function latestTickerStride() {
+    var count = latestTickerPosts().length;
+    if (count < 2) return 1;
+    return Math.min(latestTickerColumns(), count);
+  }
+
+  function latestTickerFrames() {
+    var count = latestTickerPosts().length;
+    if (!count) return 0;
+    return Math.ceil(count / latestTickerStride());
+  }
+
+  function latestTickerAlignIndex(postIndex) {
+    var count = latestTickerPosts().length;
+    if (!count) return 0;
+    var stride = latestTickerStride();
+    var frames = Math.ceil(count / stride);
+    var frame = Math.floor((postIndex || 0) / stride) % frames;
+    if (frame < 0) frame += frames;
+    return frame * stride;
+  }
+
+  // 접힌 티커에서 지금 보이는 글. 슬라이드가 절반을 넘기면 올라오는 줄이다.
   function latestTickerPostIndex() {
     var posts = latestTickerPosts();
     if (!posts.length) return 0;
-    var index = latest.tickerIndex % posts.length;
+    var index = latestTickerAlignIndex(latest.tickerIndex);
     var host = document.getElementById("latestTicker");
     var track = host && host.querySelector(".latest-ticker-track");
     var row = track && track.firstElementChild;
@@ -4437,7 +4463,12 @@
       var translateY = parts.length >= 16 ? parts[13] : parts[5];
       moved = Math.abs(parseFloat(translateY) || 0);
     }
-    if (moved >= row.offsetHeight / 2) index = (index + 1) % posts.length;
+    if (moved >= row.offsetHeight / 2) {
+      var stride = latestTickerStride();
+      var frames = Math.ceil(posts.length / stride);
+      var frame = Math.floor(index / stride);
+      index = ((frame + 1) % frames) * stride;
+    }
     return index;
   }
 
@@ -4481,15 +4512,30 @@
     );
   }
 
-  function latestTickerSkeleton() {
-    return h("div", { class: "latest-ticker-window" },
-      h("div", { class: "latest-ticker-row is-skel", "aria-hidden": "true" },
-        h("span", { class: "skeleton latest-ticker-sk-avatar" }),
-        h("span", { class: "skeleton latest-ticker-sk-icon" }),
-        h("span", { class: "skeleton latest-ticker-sk-title" }),
-        h("span", { class: "skeleton latest-ticker-sk-time" })
-      )
+  function latestTickerSkeletonCell() {
+    return h("div", { class: "latest-ticker-row is-skel", "aria-hidden": "true" },
+      h("span", { class: "skeleton latest-ticker-sk-avatar" }),
+      h("span", { class: "skeleton latest-ticker-sk-icon" }),
+      h("span", { class: "skeleton latest-ticker-sk-title" }),
+      h("span", { class: "skeleton latest-ticker-sk-time" })
     );
+  }
+
+  function latestTickerSkeleton() {
+    var cols = latestTickerColumns();
+    var frame = h("div", { class: "latest-ticker-frame" + (cols > 1 ? " is-split" : "") });
+    for (var i = 0; i < cols; i++) frame.appendChild(latestTickerSkeletonCell());
+    return h("div", { class: "latest-ticker-window" }, frame);
+  }
+
+  function latestTickerFrame(start, hidden) {
+    var posts = latestTickerPosts();
+    var stride = latestTickerStride();
+    var count = Math.min(stride, posts.length - start);
+    var frame = h("div", { class: "latest-ticker-frame" + (count > 1 ? " is-split" : "") });
+    if (hidden) frame.setAttribute("aria-hidden", "true");
+    for (var i = 0; i < count; i++) frame.appendChild(latestTickerRow(posts[start + i], hidden));
+    return frame;
   }
 
   function renderLatestTicker() {
@@ -4502,13 +4548,17 @@
       else host.replaceChildren();
       return;
     }
-    if (latest.tickerIndex >= posts.length) latest.tickerIndex = 0;
+    latest.tickerIndex = latestTickerAlignIndex(latest.tickerIndex);
     var firstPaint = !latest.tickerReady;
     var windowEl = h("div", { class: "latest-ticker-window" });
     var track = h("div", { class: "latest-ticker-track" });
-    var next = (latest.tickerIndex + 1) % posts.length;
-    track.appendChild(latestTickerRow(posts[latest.tickerIndex], false));
-    track.appendChild(latestTickerRow(posts[next], true));
+    track.appendChild(latestTickerFrame(latest.tickerIndex, false));
+    if (latestTickerFrames() > 1) {
+      var stride = latestTickerStride();
+      var frame = Math.floor(latest.tickerIndex / stride);
+      var next = ((frame + 1) % latestTickerFrames()) * stride;
+      track.appendChild(latestTickerFrame(next, true));
+    }
     windowEl.appendChild(track);
     host.replaceChildren(windowEl);
     if (!firstPaint) return;
@@ -4535,15 +4585,16 @@
   function slideLatestTicker(delta, speed) {
     var host = document.getElementById("latestTicker");
     if (!host || latest.tickerBusy || !latestIsClosed()) return false;
-    var posts = latestTickerPosts();
-    if (posts.length < 2 || !delta) return false;
+    var frames = latestTickerFrames();
+    if (frames < 2 || !delta) return false;
     var track = host.querySelector(".latest-ticker-track");
     var row = track && track.firstElementChild;
     var distance = row ? row.offsetHeight : 0;
     if (!track || distance < 1) return false;
-    var count = posts.length;
+    var stride = latestTickerStride();
+    var frame = Math.floor(latestTickerAlignIndex(latest.tickerIndex) / stride);
     var step = delta > 0 ? 1 : -1;
-    var landed = (latest.tickerIndex + step + count) % count;
+    var landed = ((frame + step + frames) % frames) * stride;
     clearLatestTickerTimer();
     if (reducedMotion) {
       latest.tickerIndex = landed;
@@ -4563,7 +4614,7 @@
       scheduleLatestTicker();
     }
     if (step < 0) {
-      track.insertBefore(latestTickerRow(posts[landed], true), track.firstElementChild);
+      track.insertBefore(latestTickerFrame(landed, true), track.firstElementChild);
       track.style.transition = "none";
       track.style.transform = "translateY(" + (-distance) + "px)";
       void track.offsetWidth;
@@ -4596,7 +4647,7 @@
 
   function scheduleLatestTicker() {
     if (latest.tickerTimer || latest.tickerBusy) return;
-    if (!latestIsClosed() || latestTickerPosts().length < 2) return;
+    if (!latestIsClosed() || latestTickerFrames() < 2) return;
     var host = document.getElementById("latestTicker");
     if (host && host.contains(document.activeElement)) return;
     if (host && host.matches(":hover") && window.matchMedia("(hover: hover) and (pointer: fine)").matches) return;
@@ -4608,8 +4659,14 @@
   }
 
   function syncLatestTicker() {
+    var cols = latestTickerColumns();
+    if (latest.tickerColumns !== cols) {
+      latest.tickerColumns = cols;
+      latest.tickerBusy = false;
+      clearLatestTickerTimer();
+    }
     if (!latest.tickerBusy) renderLatestTicker();
-    if (!latestIsClosed() || latestTickerPosts().length < 2) {
+    if (!latestIsClosed() || latestTickerFrames() < 2) {
       clearLatestTickerTimer();
       return;
     }
@@ -4660,6 +4717,7 @@
     if (nextSize === latest.pageSize) {
       latestFitPageWidths();
       latestSnap();
+      if (latest.tickerColumns !== latestTickerColumns()) syncLatestTicker();
       return;
     }
     var frame = document.getElementById("latestViewport");
@@ -5010,9 +5068,12 @@
     var query = window.matchMedia("(max-width: 767px)");
     if (query.addEventListener) query.addEventListener("change", latestRegroup);
     else if (query.addListener) query.addListener(latestRegroup);
-    var wideQuery = window.matchMedia("(min-width: 1720px)");
+    var wideQuery = window.matchMedia("(min-width: 768px)");
     if (wideQuery.addEventListener) wideQuery.addEventListener("change", latestRegroup);
     else if (wideQuery.addListener) wideQuery.addListener(latestRegroup);
+    var tickerQuery = window.matchMedia("(min-width: 1280px)");
+    if (tickerQuery.addEventListener) tickerQuery.addEventListener("change", latestRegroup);
+    else if (tickerQuery.addListener) tickerQuery.addListener(latestRegroup);
     window.addEventListener("resize", function () {
       clearTimeout(latest.resizeTimer);
       latest.resizeTimer = setTimeout(latestRegroup, 150);

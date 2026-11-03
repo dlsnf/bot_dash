@@ -1732,12 +1732,7 @@ html[data-latest="closed"] .latest-ticker:not(:empty) {
   transition: grid-template-rows 0.45s ease, opacity 0.3s ease;
 }
 
-/* 펼친 채 처음 불러올 때는 목록 스켈레톤을 보이지 않고, 글이 오면 페이드인한다. */
-.latest.is-loading:not(.is-collapsed):not(.is-closing) .latest-body {
-  opacity: 0;
-  pointer-events: none;
-}
-
+/* 펼친 채 새로고침하면 목록 스켈레톤이 보이고, 글이 오면 페이드인한다. */
 .latest.is-list-in .latest-body { animation: tickerIn 0.45s ease both; }
 
 @keyframes latestOpenIn {
@@ -1779,6 +1774,40 @@ html[data-latest="closed"] .latest-ticker:not(:empty) {
 }
 
 .latest-ticker-window { height: 44px; overflow: hidden; }
+
+.latest-ticker-frame {
+  height: 44px;
+  min-width: 0;
+  display: flex;
+  align-items: stretch;
+}
+
+/* 1열은 줄을 칸 너비까지 늘려 업로드 시각이 오른쪽 끝에 붙게 한다. */
+.latest-ticker-frame:not(.is-split) > .latest-ticker-row {
+  flex: 1 1 auto;
+  width: 100%;
+}
+
+.latest-ticker-frame.is-split {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  column-gap: 20px;
+}
+
+.latest-ticker-frame.is-split::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 1px;
+  height: 16px;
+  background: var(--border);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.latest-ticker-frame.is-split .latest-ticker-row { min-width: 0; }
 
 .latest-ticker-row {
   height: 44px;
@@ -1913,8 +1942,8 @@ html[data-latest="closed"] .latest-ticker:not(:empty) {
 
 .latest-page.is-reveal { animation: latestReveal 0.4s ease; }
 
-/* 카드가 4열 이상이면 최근 게시물도 두 열이다. 한 열 개수는 --latest-rows. */
-@media (min-width: 1720px) {
+/* 카드가 2열 이상이면 최근 게시물도 두 열이다. 한 열 개수는 --latest-rows. */
+@media (min-width: 768px) {
   .latest-page {
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
