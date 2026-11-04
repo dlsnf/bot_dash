@@ -147,7 +147,9 @@ expect("저장 오늘 합", comment_store_today_sum(array("3", "4"), array("3" =
 expect("오늘 칸이 없으면 비움", comment_store_today_sum(array("3"), array()), null);
 expect("최근 티스토리 글", tistory_newest_ids(array("3", "11", "1"), 2), array("11", "3"));
 expect("다음 목록 페이지", tistory_list_continue(1, true, 10, 24, 30), 2);
-expect("다음 링크가 없으면 목록을 끝낸다", tistory_list_continue(3, false, 10, 24, 30), 0);
+expect("다음 링크가 없어도 남은 글이 있으면 한 페이지를 더 본다", tistory_list_continue(3, false, 10, 24, 30), 4);
+expect("다음 링크가 없고 글 수를 모르면 목록을 끝낸다", tistory_list_continue(3, false, 10, null, 30), 0);
+expect("글을 다 봤으면 링크가 없어도 끝낸다", tistory_list_continue(2, false, 24, 24, 30), 0);
 expect("글을 다 봤으면 목록을 끝낸다", tistory_list_continue(2, true, 24, 24, 30), 0);
 expect("목록 페이지 상한", tistory_list_continue(30, true, 10, 400, 30), null);
 $naverPage1 = '{"postList":[{"logNo":"1","commentCount":"2","addDate":"2026. 10. 16."},{"logNo":"2","commentCount":"","addDate":"2026. 10. 15."}]}';
@@ -302,8 +304,59 @@ expect("블로그가 다 있으면 합친다", visitor_day_total($days["2026-10-
 expect("블로그가 하나라도 없으면 합을 비운다", visitor_day_total(array($naverDay => 9), array($naverDay, $tistoryDay)), null);
 expect("블로그가 없으면 합을 비운다", visitor_day_total($days["2026-10-26"], array()), null);
 expect("0명인 날도 합에 넣는다", visitor_day_total(array($naverDay => 0, $tistoryDay => 2), array($naverDay, $tistoryDay)), 2);
+$withActivity = visitor_day_close_apply(array(), $naverDay, "2026-10-26", 3, 1, 4, $dayNow);
+expect("글과 댓글을 같이 적는다", $withActivity["2026-10-26"][$naverDay], array("visitors" => 3, "posts" => 1, "comments" => 4));
+$withActivity = visitor_day_close_apply($withActivity, $naverDay, "2026-10-26", 2, 0, 9, $dayNow);
+expect("같은 날 더 작은 방문자는 객체에서도 남기지 않는다", $withActivity["2026-10-26"][$naverDay]["visitors"], 3);
+expect("같은 날 더 작은 글은 남기지 않는다", $withActivity["2026-10-26"][$naverDay]["posts"], 1);
+expect("같은 날 더 큰 댓글", $withActivity["2026-10-26"][$naverDay]["comments"], 9);
+$withActivity = visitor_day_close_apply($withActivity, $naverDay, "2026-10-26", null, null, null, $dayNow);
+expect("빈 글은 지우지 않는다", $withActivity["2026-10-26"][$naverDay]["posts"], 1);
+expect("지난 날짜 글은 쓰지 않는다", isset(visitor_day_close_apply($withActivity, $naverDay, "2026-10-25", 1, 1, 1, $dayNow)["2026-10-25"]), false);
+expect("객체여도 방문자 합을 센다", visitor_day_total($withActivity["2026-10-26"], array($naverDay)), 3);
+$postsOnly = visitor_day_close_apply(array(), $naverDay, "2026-10-26", null, 2, null, $dayNow);
+expect("방문자 없는 글은 합에서 빠진다", visitor_day_total($postsOnly["2026-10-26"], array($naverDay)), null);
+expect("방문자만 있으면 숫자로 남긴다", visitor_day_close_apply(array(), $naverDay, "2026-10-26", 8, null, null, $dayNow)["2026-10-26"][$naverDay], 8);
+$zeros = visitor_day_close_apply(array(), $naverDay, "2026-10-26", 1, 0, 0, $dayNow);
+expect("0 글은 남긴다", $zeros["2026-10-26"][$naverDay]["posts"], 0);
+expect("0 댓글은 남긴다", $zeros["2026-10-26"][$naverDay]["comments"], 0);
+$keptActivity = visitor_day_apply($withActivity, $naverDay, "2026-10-26", 10, $dayNow);
+expect("방문자만 고쳐도 글을 남긴다", $keptActivity["2026-10-26"][$naverDay]["posts"], 1);
+expect("방문자만 고치면 더 큰 값", $keptActivity["2026-10-26"][$naverDay]["visitors"], 10);
+expect("숫자와 객체를 같이 합친다", visitor_day_total(array($naverDay => array("visitors" => 4, "posts" => 1), $tistoryDay => 2), array($naverDay, $tistoryDay)), 6);
+$activityDays = $days;
+$activityDays[$oldDay] = array($naverDay => array("visitors" => 1, "posts" => 2));
+$activityDays[$keepDay] = array($naverDay => array("visitors" => 2, "comments" => 3));
+$activityDays = visitor_day_close_apply($activityDays, $tistoryDay, "2026-10-26", 5, null, null, $dayNow);
+expect("400일보다 오래된 글 기록도 뺀다", isset($activityDays[$oldDay]), false);
+expect("400일 전 댓글은 남긴다", $activityDays[$keepDay][$naverDay]["comments"], 3);
 $sampleLine = "티스토리, https://4649ldy.tistory.com/, 네이버 블로그, https://blog.naver.com/4649ldy, Blogger, https://doda-in-korea.blogspot.com/";
 expect("마크다운에서 집계 주소", visitor_urls_from($sampleLine), array($tistoryDay, $naverDay, $bloggerDay));
+$yesterdayHtml = '<div class="box-visit"><p class="text-total">359</p><ul><li>Today : 1</li><li>Yesterday : 17</li></ul></div><p>어제 : 99</p>';
+expect("티스토리 어제 방문자", tistory_yesterday_count($yesterdayHtml), 17);
+expect("카운터 밖 어제는 무시한다", tistory_yesterday_count("<p>어제 : 9</p>"), null);
+expect("어제 칸이 없으면 비운다", tistory_yesterday_count('<div class="box-visit">Today : 1</div>'), null);
+$bloggerTotals = array(
+    "2026-10-24" => array($bloggerDay => 100),
+    "2026-10-25" => array($bloggerDay => 130)
+);
+expect("블로거 어제는 전체 차이", blogger_yesterday_visitors($bloggerTotals, $bloggerDay, $dayNow), 30);
+expect("그제 마감이 없으면 블로거 어제를 비운다", blogger_yesterday_visitors(array("2026-10-25" => array($bloggerDay => 130)), $bloggerDay, $dayNow), null);
+expect("전체가 줄면 블로거 어제를 비운다", blogger_yesterday_visitors(array("2026-10-24" => array($bloggerDay => 140), "2026-10-25" => array($bloggerDay => 130)), $bloggerDay, $dayNow), null);
+$fillNow = new DateTime("2026-10-27 08:10:00", new DateTimeZone("Asia/Seoul"));
+$filled = visitor_day_fill_apply(array(), $naverDay, "2026-10-26", 4, 1, null, $fillNow);
+expect("어제 빈 칸을 채운다", $filled["2026-10-26"][$naverDay], array("visitors" => 4, "posts" => 1));
+$filled = visitor_day_fill_apply($filled, $naverDay, "2026-10-26", 9, 0, 2, $fillNow);
+expect("이미 있는 어제 방문자는 그대로 둔다", $filled["2026-10-26"][$naverDay]["visitors"], 4);
+expect("이미 있는 어제 글은 그대로 둔다", $filled["2026-10-26"][$naverDay]["posts"], 1);
+expect("비어 있던 어제 댓글을 채운다", $filled["2026-10-26"][$naverDay]["comments"], 2);
+expect("오늘 칸은 보충하지 않는다", isset(visitor_day_fill_apply(array(), $naverDay, "2026-10-27", 1, 1, 1, $fillNow)["2026-10-27"]), false);
+expect("그제는 보충하지 않는다", isset(visitor_day_fill_apply(array(), $naverDay, "2026-10-25", 1, 1, 1, $fillNow)["2026-10-25"]), false);
+$keptNumber = visitor_day_fill_apply(array("2026-10-26" => array($naverDay => 8)), $naverDay, "2026-10-26", 1, 3, null, $fillNow);
+expect("숫자 마감에 글을 보태도 방문자는 남긴다", $keptNumber["2026-10-26"][$naverDay]["visitors"], 8);
+expect("숫자 마감의 빈 글을 채운다", $keptNumber["2026-10-26"][$naverDay]["posts"], 3);
+expect("글 합", visitor_day_field_total($filled["2026-10-26"], array($naverDay), "posts"), 1);
+expect("댓글이 없으면 글 합을 비운다", visitor_day_field_total($filled["2026-10-26"], array($naverDay, $tistoryDay), "comments"), null);
 
 if ($failed > 0) {
     fwrite(STDERR, $failed . " failed\n");

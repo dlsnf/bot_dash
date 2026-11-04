@@ -51,7 +51,7 @@
     })();
   </script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" integrity="sha384-PPIZEGYM1v8zp5Py7UjFb79S58UeqCL9pYVnVPURKEqvioPROaVAJKKLzvH2rDnI" crossorigin="anonymous">
-  <link rel="stylesheet" href="css/style.css?v=68">
+  <link rel="stylesheet" href="css/style.css?v=70">
 </head>
 <body data-page="dashboard" class="is-booting">
   <a class="skip" href="#cards">캐릭터 목록으로 건너뛰기</a>
@@ -123,10 +123,11 @@
                 <i class="fa-solid fa-xmark" aria-hidden="true"></i>
               </button>
             </div>
-            <div id="filterTabs" class="filter-tabs" role="group" aria-label="방문자 필터">
+            <div id="filterTabs" class="filter-tabs" role="group" aria-label="캐릭터 필터">
               <button type="button" data-filter="all" aria-pressed="true">전체 <span class="count" id="count-all">0</span></button>
               <button type="button" data-filter="has" aria-pressed="false">방문자 있음 <span class="count" id="count-has">0</span></button>
               <button type="button" data-filter="zero" aria-pressed="false">방문자 0 <span class="count" id="count-zero">0</span></button>
+              <button type="button" data-filter="nopost" aria-pressed="false">오늘 글 없음 <span class="count" id="count-nopost">0</span></button>
             </div>
             <label class="sort">
               <span class="sr-only">정렬</span>
@@ -186,6 +187,7 @@
   <main id="content">
     <div class="wrap">
       <p id="notice" class="notice" role="status" hidden></p>
+      <p id="closeGap" class="notice" role="status" hidden></p>
       <div class="view-bar">
         <div class="view-tabs" role="tablist" aria-label="화면 전환">
           <button type="button" id="tabCards" role="tab" aria-selected="true" aria-controls="cards">
@@ -296,6 +298,26 @@
           </div>
           <p id="monthChartEmpty" class="chart-empty" hidden></p>
         </div>
+        <div class="chart-card chart-card-activity">
+          <div class="chart-head">
+            <h2 id="monthPostsChartTitle">이번 달 글</h2>
+            <p>어제까지는 한국시간 23:50 마감입니다. 오늘은 지금까지의 값이라 점선입니다. 읽지 못한 날은 선이 끊깁니다.</p>
+          </div>
+          <div class="chart-wrap is-month" id="monthPostsChartWrap">
+            <canvas id="monthPostsChart" aria-hidden="true"></canvas>
+          </div>
+          <p id="monthPostsChartEmpty" class="chart-empty" hidden></p>
+        </div>
+        <div class="chart-card chart-card-activity">
+          <div class="chart-head">
+            <h2 id="monthCommentsChartTitle">이번 달 댓글</h2>
+            <p>어제까지는 한국시간 23:50 마감입니다. 오늘은 지금까지의 값이라 점선입니다. 읽지 못한 날은 선이 끊깁니다.</p>
+          </div>
+          <div class="chart-wrap is-month" id="monthCommentsChartWrap">
+            <canvas id="monthCommentsChart" aria-hidden="true"></canvas>
+          </div>
+          <p id="monthCommentsChartEmpty" class="chart-empty" hidden></p>
+        </div>
         <div id="statsTable"></div>
       </section>
     </div>
@@ -319,8 +341,8 @@
   <script src="js/config.js"></script>
   <script src="js/parser.js"></script>
   <script src="js/reel.js"></script>
-  <script src="js/chart.js?v=29"></script>
+  <script src="js/chart.js?v=31"></script>
   <script src="js/login.js?v=2"></script>
-  <script src="js/app.js?v=66"></script>
+  <script src="js/app.js?v=69"></script>
 </body>
 </html>

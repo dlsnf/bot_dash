@@ -1451,6 +1451,7 @@ body[data-page="login"].auth-ready .login-shell { visibility: visible; }
   .stats-panel > .chart-card { grid-column: span 5; }
   .stats-panel > .chart-card-share { grid-column: span 3; }
   .stats-panel > .chart-card-month { grid-column: span 7; }
+  .stats-panel > .chart-card-activity { grid-column: span 5; }
   .stats-panel > #statsTable { grid-column: 1 / -1; }
   .stats-panel .chart-head p { max-width: none; }
   .chart-wrap,

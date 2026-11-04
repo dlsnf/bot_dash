@@ -685,6 +685,8 @@ function comment_store_read($key) {
 }
 
 function comment_store_save($key, $record) {
+    // 마감은 root 로 돌 수 있다. 대시보드 댓글 저장을 덮어 쓰지 않는다.
+    if (defined("BOTDASH_VISITOR_CLOSE")) return false;
     $record = comment_store_normalize($record);
     if (!comment_store_key_ok($key) || $record === null) return false;
     $saved = comment_store_locked(true, function ($data) use ($key, $record) {
@@ -696,6 +698,7 @@ function comment_store_save($key, $record) {
 }
 
 function comment_store_queue($key, $job) {
+    if (defined("BOTDASH_VISITOR_CLOSE")) return;
     if (!comment_store_key_ok($key) || !is_callable($job)) return;
     if (!isset($GLOBALS["BOTDASH_COMMENT_JOBS"]) || !is_array($GLOBALS["BOTDASH_COMMENT_JOBS"])) {
         $GLOBALS["BOTDASH_COMMENT_JOBS"] = array();
@@ -954,7 +957,8 @@ function naver_counts($id) {
     if ($total === 0) return naver_count_row(0, 0, $visitors[0], $visitors[1], 0, 0, array());
     $rssXml = ($rssStatus === 200 && $xml !== "") ? $xml : "";
     // 20편을 넘으면 최근 목록만 다시 세고, 나머지는 저장분이 글 수와 맞을 때만 더한다.
-    $saved = naver_comments_saved($id, $blogNo, $body, $rssXml);
+    // 하루 마감은 저장분을 쓰지 않고 그날 댓글을 다시 센다.
+    $saved = defined("BOTDASH_VISITOR_CLOSE") ? null : naver_comments_saved($id, $blogNo, $body, $rssXml);
     if (is_array($saved)) {
         return naver_count_row(
             $total,
@@ -1032,14 +1036,16 @@ function tistory_comments($host, $postTotal, $fetched = null) {
     $page = 1;
     $postGoal = is_int($postTotal) ? $postTotal : null;
     while ($added > 0) {
-        $next = tistory_list_continue($page, tistory_has_next_page($html, $page), count($counts), $postGoal, TISTORY_LIST_MAX_PAGES);
+        $linked = tistory_has_next_page($html, $page);
+        $next = tistory_list_continue($page, $linked, count($counts), $postGoal, TISTORY_LIST_MAX_PAGES);
         if ($next === 0) break;
         if ($next === null) {
             $stop = "many";
             break;
         }
         $from = $next;
-        $to = $from + 6;
+        // 다음 링크가 없으면 한 페이지만 확인한다. 새 글이 없으면 바로 멈춘다.
+        $to = $linked ? $from + 6 : $from;
         if ($to > TISTORY_LIST_MAX_PAGES) $to = TISTORY_LIST_MAX_PAGES;
         $jobs = array();
         for ($n = $from; $n <= $to; $n++) {
@@ -1277,7 +1283,7 @@ function tistory_comments_today($host, $ids) {
     $full = array();
     if (!is_array($ids) || !$ids) return array(null, "unread", $full);
     $key = tistory_comment_key($host);
-    if (count($ids) > NAVER_LIST_PAGE_SIZE && comment_store_key_ok($key)) {
+    if (!defined("BOTDASH_VISITOR_CLOSE") && count($ids) > NAVER_LIST_PAGE_SIZE && comment_store_key_ok($key)) {
         $stored = comment_store_read($key);
         $head = tistory_newest_ids($ids, NAVER_LIST_PAGE_SIZE);
         $rest = is_array($stored) ? comment_store_rest($head, $stored["counts"], count($ids)) : null;
@@ -1701,12 +1707,16 @@ function visitor_days_own($path) {
 }
 
 /**
- * 오늘 방문자 한 칸을 data/visitor_days.json 에 남긴다.
- * 지난 날짜와 더 작은 같은 날 값은 visitor_day_apply 가 거절한다.
+ * 오늘 방문자, 글 수, 댓글 수를 data/visitor_days.json 에 남긴다.
+ * 지난 날짜와 더 작은 같은 날 값은 visitor_day_close_apply 가 거절한다.
+ * 못 읽은 칸은 null 이라 적지 않는다.
  */
-function visitor_record_day($blog, $count, $now = null) {
-    $count = count_or_null($count);
-    if (!is_string($blog) || visitor_blog_url($blog) !== $blog || !is_int($count)) return false;
+function visitor_record_fields($blog, $visitors, $posts, $comments, $now = null) {
+    $visitors = count_or_null($visitors);
+    $posts = count_or_null($posts);
+    $comments = count_or_null($comments);
+    if (!is_string($blog) || visitor_blog_url($blog) !== $blog) return false;
+    if (!is_int($visitors) && !is_int($posts) && !is_int($comments)) return false;
     $path = visitor_days_path();
     $dir = dirname($path);
     if (!is_dir($dir) || !is_writable($dir)) return false;
@@ -1723,7 +1733,15 @@ function visitor_record_day($blog, $count, $now = null) {
         if (!is_array($data)) $data = array();
     }
     $clock = seoul_clock($now);
-    $stored = visitor_day_apply(is_array($data) ? $data : array(), $blog, $clock->format("Y-m-d"), $count, $clock);
+    $stored = visitor_day_close_apply(
+        is_array($data) ? $data : array(),
+        $blog,
+        $clock->format("Y-m-d"),
+        $visitors,
+        $posts,
+        $comments,
+        $clock
+    );
     $json = json_encode($stored, JSON_UNESCAPED_SLASHES);
     $wrote = false;
     if (is_string($json)) {
@@ -1737,6 +1755,10 @@ function visitor_record_day($blog, $count, $now = null) {
     fclose($fh);
     if ($wrote) visitor_days_own($path);
     return $wrote;
+}
+
+function visitor_record_day($blog, $count, $now = null) {
+    return visitor_record_fields($blog, $count, null, null, $now);
 }
 
 function blogger_cached_counts($blog, $data) {
@@ -1866,6 +1888,210 @@ function blogger_photo_url($name, $large) {
     );
     if ($status !== 200) return "";
     return blogger_html_image($html, $large);
+}
+
+function dashboard_blog_urls() {
+    if (!function_exists("botdash_character_files")) return array();
+    $urls = array();
+    $dir = __DIR__ . "/characters";
+    foreach (botdash_character_files($dir) as $file) {
+        $text = @file_get_contents($dir . "/" . $file);
+        if (!is_string($text)) continue;
+        foreach (visitor_urls_from($text) as $url) $urls[$url] = true;
+    }
+    $keys = array_keys($urls);
+    sort($keys, SORT_STRING);
+    return $keys;
+}
+
+function visitor_days_read() {
+    $path = visitor_days_path();
+    if (!is_file($path)) return array();
+    $raw = @file_get_contents($path);
+    if (!is_string($raw) || $raw === "") return array();
+    $data = json_decode($raw, true);
+    return is_array($data) ? $data : array();
+}
+
+function blogger_totals_read() {
+    $path = blogger_totals_path();
+    if (!is_file($path)) return array();
+    $raw = @file_get_contents($path);
+    if (!is_string($raw) || $raw === "") return array();
+    $data = json_decode($raw, true);
+    return is_array($data) ? $data : array();
+}
+
+/**
+ * 어제에 비어 있는 칸만 data/visitor_days.json 에 넣는다.
+ * 이미 있는 숫자는 visitor_day_fill_apply 가 그대로 둔다.
+ */
+function visitor_record_fill($blog, $visitors, $posts, $comments, $now = null) {
+    $visitors = count_or_null($visitors);
+    $posts = count_or_null($posts);
+    $comments = count_or_null($comments);
+    if (!is_string($blog) || visitor_blog_url($blog) !== $blog) return false;
+    if (!is_int($visitors) && !is_int($posts) && !is_int($comments)) return false;
+    $path = visitor_days_path();
+    $dir = dirname($path);
+    if (!is_dir($dir) || !is_writable($dir)) return false;
+    $fh = @fopen($path, "c+");
+    if (!$fh) return false;
+    if (!flock($fh, LOCK_EX)) {
+        fclose($fh);
+        return false;
+    }
+    $raw = stream_get_contents($fh);
+    if (!is_string($raw) || $raw === "") $data = array();
+    else {
+        $data = json_decode($raw, true);
+        if (!is_array($data)) $data = array();
+    }
+    $clock = seoul_clock($now);
+    $yesterday = clone $clock;
+    $yesterday->modify("-1 day");
+    $stored = visitor_day_fill_apply(
+        is_array($data) ? $data : array(),
+        $blog,
+        $yesterday->format("Y-m-d"),
+        $visitors,
+        $posts,
+        $comments,
+        $clock
+    );
+    $json = json_encode($stored, JSON_UNESCAPED_SLASHES);
+    $wrote = false;
+    if (is_string($json)) {
+        rewind($fh);
+        if (ftruncate($fh, 0) && fwrite($fh, $json) !== false) {
+            fflush($fh);
+            $wrote = true;
+        }
+    }
+    flock($fh, LOCK_UN);
+    fclose($fh);
+    if ($wrote) visitor_days_own($path);
+    return $wrote;
+}
+
+function visitor_fill_rss_count($url, $now) {
+    $kind = blog_kind($url);
+    $feed = "";
+    $allow = null;
+    if ($kind === "naver") {
+        $id = naver_blog_id($url);
+        if ($id === "") return null;
+        $feed = "https://rss.blog.naver.com/" . rawurlencode($id) . ".xml";
+        $allow = function ($target) use ($id) {
+            return host_of($target) === "rss.blog.naver.com"
+                && parse_url($target, PHP_URL_PATH) === "/" . $id . ".xml";
+        };
+    } elseif ($kind === "tistory") {
+        $host = host_of($url);
+        if (!preg_match('/^[a-z0-9-]+\.tistory\.com$/', $host)) return null;
+        $feed = "https://" . $host . "/rss";
+        $allow = function ($target) use ($host) {
+            if (host_of($target) !== $host) return false;
+            $path = parse_url($target, PHP_URL_PATH);
+            return $path === "/rss" || $path === "/feed";
+        };
+    } else {
+        return null;
+    }
+    list($status, $xml) = fetch_url($feed, BLOG_HTML_LIMIT, $allow, array(), true, 6, true);
+    if ($status !== 200 || $xml === "") return null;
+    return rss_posts_on_day($xml, $now);
+}
+
+function visitor_fill_blogger_count($url, $kind, $min, $max) {
+    $name = blogspot_name(host_of($url));
+    if ($name === "") return null;
+    $feedKind = $kind === "comments" ? "comments" : "posts";
+    list($status, $body) = fetch_url(
+        blogger_feed_url($name, $feedKind, $min, $max),
+        BLOG_HTML_LIMIT,
+        blogger_feed_allow($name),
+        array(),
+        true,
+        6,
+        true,
+        tistory_browser()
+    );
+    return blogger_feed_total($status, $body);
+}
+
+function visitor_fill_tistory_yesterday($url) {
+    $host = host_of($url);
+    if (!preg_match('/^[a-z0-9-]+\.tistory\.com$/', $host)) return null;
+    $allow = function ($target) use ($host) {
+        if (host_of($target) !== $host) return false;
+        $path = parse_url($target, PHP_URL_PATH);
+        return !is_string($path) || $path === "" || $path === "/";
+    };
+    list($status, $html) = fetch_url(
+        "https://" . $host . "/",
+        BLOG_HTML_LIMIT,
+        $allow,
+        array("Accept-Language: ko-KR,ko;q=0.9"),
+        true,
+        6,
+        true,
+        tistory_browser()
+    );
+    if ($status !== 200 || $html === "") return null;
+    return tistory_yesterday_count($html);
+}
+
+/**
+ * 어제 마감에 빈 칸이 있으면 채울 수 있는 것만 적는다.
+ * 네이버 어제 방문자는 공개 주소가 없어서 비워 둔다.
+ * 반환은 [썼는지, 방문자, 글, 댓글]. 못 읽은 칸은 null 이다.
+ */
+function visitor_fill_one($url, $now = null) {
+    $clock = seoul_clock($now);
+    $yesterday = clone $clock;
+    $yesterday->modify("-1 day");
+    $day = $yesterday->format("Y-m-d");
+    $noon = clone $yesterday;
+    $noon->setTime(12, 0, 0);
+    $data = visitor_days_read();
+    $cell = (isset($data[$day]) && is_array($data[$day]) && array_key_exists($url, $data[$day])) ? $data[$day][$url] : null;
+    $needVisitors = !is_int(visitor_day_visitors($cell));
+    $needPosts = !is_int(visitor_day_part($cell, "posts"));
+    $needComments = !is_int(visitor_day_part($cell, "comments"));
+    if (!$needVisitors && !$needPosts && !$needComments) return array(false, null, null, null, false);
+    $kind = blog_kind($url);
+    $visitors = null;
+    $posts = null;
+    $comments = null;
+    if ($needVisitors && $kind === "tistory") $visitors = visitor_fill_tistory_yesterday($url);
+    if ($needVisitors && $kind === "blogger") {
+        $visitors = blogger_yesterday_visitors(blogger_totals_read(), $url, $clock);
+    }
+    if ($needPosts && ($kind === "naver" || $kind === "tistory")) $posts = visitor_fill_rss_count($url, $noon);
+    if ($kind === "blogger" && ($needPosts || $needComments)) {
+        $min = seoul_day_start($noon)->format("Y-m-d\\TH:i:sP");
+        $max = seoul_day_start($clock)->format("Y-m-d\\TH:i:sP");
+        if ($needPosts) $posts = visitor_fill_blogger_count($url, "posts", $min, $max);
+        if ($needComments) $comments = visitor_fill_blogger_count($url, "comments", $min, $max);
+    }
+    $wrote = false;
+    if (is_int($visitors) || is_int($posts) || is_int($comments)) {
+        $wrote = visitor_record_fill($url, $visitors, $posts, $comments, $clock);
+    }
+    return array($wrote, $visitors, $posts, $comments, true);
+}
+
+function visitor_fill_line($url, $wrote, $visitors, $posts, $comments, $missing) {
+    if (!$missing) return $url . " 채울 칸 없음";
+    $parts = array();
+    if (is_int($visitors)) $parts[] = "방문자 " . $visitors;
+    if (is_int($posts)) $parts[] = "글 " . $posts;
+    if (is_int($comments)) $parts[] = "댓글 " . $comments;
+    if (!$parts) return $url . " 어제 없음";
+    $line = $url . " " . implode(", ", $parts);
+    if (!$wrote) $line .= " 기록을 쓰지 못함";
+    return $line;
 }
 
 if (!defined("BOTDASH_PROFILE_LIBRARY")) {

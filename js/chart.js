@@ -778,19 +778,90 @@
     }
   }
 
+  function closedActivityTotal(character, row, field) {
+    var blogs = deps.countableBlogs(character);
+    if (!blogs.length || !row) return null;
+    var sum = 0;
+    var index;
+    for (index = 0; index < blogs.length; index++) {
+      var key = deps.countableBlogUrl(blogs[index].url || "");
+      var cell = key && row[key];
+      var value = cell && typeof cell === "object" ? cell[field] : null;
+      if (!dayNumber(value)) return null;
+      sum += value;
+    }
+    return sum;
+  }
+
+  function liveActivityTotal(character, field) {
+    var blogs = deps.countableBlogs(character);
+    if (!blogs.length) return null;
+    var sum = 0;
+    var index;
+    for (index = 0; index < blogs.length; index++) {
+      var key = deps.countableBlogUrl(blogs[index].url || "");
+      var data = key && deps.state.blogCounts[key];
+      if (!data || data.status !== "ok" || !dayNumber(data[field])) return null;
+      sum += data[field];
+    }
+    return sum;
+  }
+
+  function monthHasActivity(days, todayKey, field) {
+    var month = String(todayKey || "").slice(0, 7);
+    if (!days || month.length !== 7) return false;
+    return Object.keys(days).some(function (day) {
+      var row = days[day];
+      if (day.slice(0, 7) !== month || !row) return false;
+      return Object.keys(row).some(function (url) {
+        var cell = row[url];
+        return !!(cell && dayNumber(cell[field]));
+      });
+    });
+  }
+
+  function monthView(metric) {
+    if (metric === "posts" || metric === "comments") {
+      var field = metric;
+      var liveField = metric === "posts" ? "postsToday" : "commentsToday";
+      var suffix = metric === "posts" ? "Posts" : "Comments";
+      return {
+        wrapId: "month" + suffix + "ChartWrap",
+        emptyId: "month" + suffix + "ChartEmpty",
+        canvasId: "month" + suffix + "Chart",
+        stateKey: "month" + suffix + "Chart",
+        source: "activityDays",
+        past: function (row, dayRow) { return closedActivityTotal(row, dayRow, field); },
+        live: function (row) { return liveActivityTotal(row, liveField); },
+        hasClose: function (dayMap, todayKey) { return monthHasActivity(dayMap, todayKey, field); }
+      };
+    }
+    return {
+      wrapId: "monthChartWrap",
+      emptyId: "monthChartEmpty",
+      canvasId: "monthChart",
+      stateKey: "monthChart",
+      source: "visitorDays",
+      past: function (row, dayRow) { return closedDayTotal(row, dayRow); },
+      live: function (row) { return liveDayTotal(row); },
+      hasClose: function (dayMap, todayKey) { return monthHasClose(dayMap, todayKey); }
+    };
+  }
+
   function renderMonthChart(options) {
-    var wrap = document.getElementById("monthChartWrap");
-    var empty = document.getElementById("monthChartEmpty");
-    var canvas = document.getElementById("monthChart");
+    var view = monthView(options && options.metric);
+    var wrap = document.getElementById(view.wrapId);
+    var empty = document.getElementById(view.emptyId);
+    var canvas = document.getElementById(view.canvasId);
     if (!wrap || !canvas) return;
-    var existed = !!deps.state.monthChart;
+    var existed = !!deps.state[view.stateKey];
     var rise = !deps.reducedMotion && (!!(options && options.rise) || !existed);
-    if (deps.state.monthChart) {
-      deps.state.monthChart.destroy();
-      deps.state.monthChart = null;
+    if (deps.state[view.stateKey]) {
+      deps.state[view.stateKey].destroy();
+      deps.state[view.stateKey] = null;
     }
     var todayKey = deps.seoulDateKey(new Date());
-    var days = deps.state.visitorDays || {};
+    var days = deps.state[view.source] || {};
     var rows = deps.visibleCharacters().filter(function (row) {
       return row.ok && deps.countableBlogs(row).length;
     });
@@ -798,7 +869,7 @@
       showMonthMessage(wrap, empty, typeof Chart === "undefined" ? "Chart.js를 불러오지 못했습니다." : "그래프를 표시할 캐릭터가 없습니다.");
       return;
     }
-    if (!monthHasClose(days, todayKey)) {
+    if (!view.hasClose(days, todayKey)) {
       showMonthMessage(wrap, empty, "마감 기록이 없습니다.");
       return;
     }
@@ -831,8 +902,8 @@
           datasets: rows.map(function (row) {
             var color = lineColor(row.id);
             var data = keys.map(function (key, index) {
-              if (index === last) return liveDayTotal(row);
-              return closedDayTotal(row, days[key]);
+              if (index === last) return view.live(row);
+              return view.past(row, days[key]);
             });
             return {
               label: row.name,
@@ -912,7 +983,7 @@
         chart.$pointFont = 10;
         chart.$pointStand = false;
       }
-      deps.state.monthChart = chart;
+      deps.state[view.stateKey] = chart;
       if (monthHost && monthWrap && monthHost.style.width !== "100%") monthWrap.scrollLeft = monthWrap.scrollWidth;
     } catch (error) {
       showMonthMessage(wrap, empty, "그래프를 그리지 못했습니다.");
@@ -1322,7 +1393,14 @@
       renderChart(options);
     },
     renderMonth: function (options) {
-      renderMonthChart(options);
+      ["visitors", "posts", "comments"].forEach(function (metric) {
+        var next = { metric: metric };
+        if (options) {
+          next.replay = options.replay;
+          next.rise = options.rise;
+        }
+        renderMonthChart(next);
+      });
     },
     renderShare: function (options) {
       renderShareChart(options);

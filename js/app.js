@@ -37,7 +37,7 @@
     latestSize: "botdash_latest_size",
     latestSizeMobile: "botdash_latest_size_m"
   };
-  var FILTERS = { all: 1, has: 1, zero: 1 };
+  var FILTERS = { all: 1, has: 1, zero: 1, nopost: 1 };
   var SORTS = { visitors_desc: 1, visitors_asc: 1, name: 1, drop: 1, posts: 1 };
   var GAP_TEXT = {
     cap20: "20개 초과",
@@ -66,8 +66,12 @@
     chart: null,
     totalChart: null,
     monthChart: null,
+    monthPostsChart: null,
+    monthCommentsChart: null,
     shareChart: null,
     visitorDays: {},
+    activityDays: {},
+    visitorDaysReady: false,
     chartRiseUntil: 0,
     chartRiseTimer: 0,
     chartRisePending: false,
@@ -402,6 +406,8 @@
       state.characters = [];
       state.statsUpdatedAt = null;
       state.visitorDays = {};
+      state.activityDays = {};
+      state.visitorDaysReady = false;
       state.loadedAt = new Date();
       state.notices = ["파일을 직접 열면 마크다운을 읽지 못합니다. 웹서버로 열어 주세요."];
       return;
@@ -424,12 +430,17 @@
       notices.push("stats.json을 읽지 못했습니다. 마크다운 안의 통계만 사용합니다.");
     }
     state.visitorDays = {};
+    state.activityDays = {};
+    state.visitorDaysReady = false;
     try {
       var dayText = await fetchText("content.php?f=" + encodeURIComponent("data/visitor_days.json") + "&t=" + stamp);
       var dayDoc = JSON.parse(dayText);
       state.visitorDays = normalizeVisitorDays(dayDoc);
+      state.activityDays = normalizeActivityDays(dayDoc);
+      state.visitorDaysReady = true;
     } catch (error) {
       if (!error || error.message !== "HTTP 404") notices.push("일별 방문자 기록을 읽지 못했습니다.");
+      else state.visitorDaysReady = true;
     }
 
     var rows = await Promise.all(files.map(async function (file) {
@@ -466,6 +477,43 @@
     state.notices = notices;
   }
 
+  // 예전 마감은 숫자다. 글·댓글이 있으면 visitors 가 방문자다.
+  function visitorDayCount(value) {
+    if (value && typeof value === "object") value = value.visitors;
+    if (typeof value === "string" && /^\d{1,12}$/.test(value)) value = Number(value);
+    if (typeof value !== "number" || !isFinite(value) || value < 0 || Math.floor(value) !== value) return null;
+    return value;
+  }
+
+  function activityPart(value, key) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    var raw = value[key];
+    if (typeof raw === "string" && /^\d{1,12}$/.test(raw)) raw = Number(raw);
+    if (typeof raw !== "number" || !isFinite(raw) || raw < 0 || Math.floor(raw) !== raw) return null;
+    return raw;
+  }
+
+  function normalizeActivityDays(parsed) {
+    var out = {};
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return out;
+    Object.keys(parsed).forEach(function (day) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return;
+      var row = parsed[day];
+      if (!row || typeof row !== "object" || Array.isArray(row)) return;
+      var clean = {};
+      Object.keys(row).forEach(function (url) {
+        var posts = activityPart(row[url], "posts");
+        var comments = activityPart(row[url], "comments");
+        if (posts == null && comments == null) return;
+        clean[url] = {};
+        if (posts != null) clean[url].posts = posts;
+        if (comments != null) clean[url].comments = comments;
+      });
+      if (Object.keys(clean).length) out[day] = clean;
+    });
+    return out;
+  }
+
   function normalizeVisitorDays(parsed) {
     var out = {};
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return out;
@@ -475,14 +523,44 @@
       if (!row || typeof row !== "object" || Array.isArray(row)) return;
       var clean = {};
       Object.keys(row).forEach(function (url) {
-        var value = row[url];
-        if (typeof value === "string" && /^\d{1,12}$/.test(value)) value = Number(value);
-        if (typeof value !== "number" || !isFinite(value) || value < 0 || Math.floor(value) !== value) return;
+        var value = visitorDayCount(row[url]);
+        if (value == null) return;
         clean[url] = value;
       });
       if (Object.keys(clean).length) out[day] = clean;
     });
     return out;
+  }
+
+  function seoulDayShift(key, delta) {
+    var matched = /^(\d{4})-(\d{2})-(\d{2})$/.exec(key || "");
+    if (!matched) return "";
+    var utc = Date.UTC(Number(matched[1]), Number(matched[2]) - 1, Number(matched[3]) + delta);
+    var date = new Date(utc);
+    function two(n) { return (n < 10 ? "0" : "") + n; }
+    return date.getUTCFullYear() + "-" + two(date.getUTCMonth() + 1) + "-" + two(date.getUTCDate());
+  }
+
+  // 어제 방문자 마감이 없는 집계 블로그. 0은 마감이 있는 것이다.
+  function closeGapText() {
+    if (!state.visitorDaysReady) return "";
+    var yesterday = seoulDayShift(seoulDateKey(new Date()), -1);
+    if (!yesterday) return "";
+    var row = state.visitorDays[yesterday] || {};
+    var seen = {};
+    var names = [];
+    state.characters.forEach(function (character) {
+      if (!character.ok) return;
+      labeledBlogs(character, true).forEach(function (item) {
+        var key = countableBlogUrl(item.blog.url || "");
+        if (!key || seen[key]) return;
+        seen[key] = true;
+        if (typeof row[key] === "number") return;
+        names.push((character.name || character.id || "블로그") + " " + item.label);
+      });
+    });
+    if (!names.length) return "";
+    return "어제 마감에 빠짐: " + names.join(", ");
   }
 
   function findById(id) {
@@ -596,7 +674,24 @@
     if (!character.ok) return false;
     if (filter === "has") return character.todayVisitors > 0;
     if (filter === "zero") return character.todayVisitors === 0;
+    if (filter === "nopost") return postsTodaySum(character) === 0;
     return true;
+  }
+
+  // 집계 블로그가 있고, 오늘 글 수를 모두 읽었을 때만 합을 낸다. 못 읽은 블로그는 0으로 치지 않는다.
+  function postsTodaySum(character) {
+    if (!character || !character.ok) return null;
+    var blogs = countableBlogs(character);
+    if (!blogs.length) return null;
+    var sum = 0;
+    var index;
+    for (index = 0; index < blogs.length; index++) {
+      var key = countableBlogUrl(blogs[index].url || "");
+      var data = key && state.blogCounts[key];
+      if (!data || data.status !== "ok" || typeof data.postsToday !== "number" || !isFinite(data.postsToday)) return null;
+      sum += data.postsToday;
+    }
+    return sum;
   }
 
   function dropAmount(character) {
@@ -2246,7 +2341,7 @@
     ["statVisitors", "statTotal"].forEach(function (id) {
       paintPendingValue(document.getElementById(id), "sk-metric-num");
     });
-    ["count-all", "count-has", "count-zero"].forEach(function (id) {
+    ["count-all", "count-has", "count-zero", "count-nopost"].forEach(function (id) {
       paintPendingValue(document.getElementById(id), "sk-count");
     });
   }
@@ -2256,7 +2351,7 @@
     if (!countsBlockPaint()) return;
     paintPendingValue(document.getElementById("statVisitors"), "sk-metric-num");
     paintPendingValue(document.getElementById("statTotal"), "sk-metric-num");
-    ["count-has", "count-zero"].forEach(function (id) {
+    ["count-has", "count-zero", "count-nopost"].forEach(function (id) {
       paintPendingValue(document.getElementById(id), "sk-count");
     });
     document.querySelectorAll("[data-visitor-blog]").forEach(function (block) {
@@ -2300,6 +2395,14 @@
     }
     el.hidden = false;
     el.textContent = state.notices.join(" ");
+  }
+
+  function renderCloseGap() {
+    var el = document.getElementById("closeGap");
+    if (!el) return;
+    var text = closeGapText();
+    el.hidden = !text;
+    el.textContent = text;
   }
 
   function renderMetrics() {
@@ -2353,7 +2456,8 @@
     var counts = {
       all: matched.length,
       has: matched.filter(function (row) { return row.ok && row.todayVisitors > 0; }).length,
-      zero: matched.filter(function (row) { return row.ok && row.todayVisitors === 0; }).length
+      zero: matched.filter(function (row) { return row.ok && row.todayVisitors === 0; }).length,
+      nopost: matched.filter(function (row) { return postsTodaySum(row) === 0; }).length
     };
     var wait = countsBlockPaint();
     Object.keys(counts).forEach(function (key) {
@@ -2668,15 +2772,17 @@
 
   function holdChart() {
     clearChartRise();
-    ["chartEmpty", "totalChartEmpty", "monthChartEmpty", "shareChartEmpty"].forEach(function (id) {
+    ["chartEmpty", "totalChartEmpty", "monthChartEmpty", "monthPostsChartEmpty", "monthCommentsChartEmpty", "shareChartEmpty"].forEach(function (id) {
       var empty = document.getElementById(id);
       if (empty) empty.hidden = true;
     });
     holdWrap("chartWrap");
     holdWrap("totalChartWrap");
     holdWrap("monthChartWrap");
+    holdWrap("monthPostsChartWrap");
+    holdWrap("monthCommentsChartWrap");
     holdWrap("shareChartWrap");
-    ["chart", "totalChart", "monthChart", "shareChart"].forEach(function (key) {
+    ["chart", "totalChart", "monthChart", "monthPostsChart", "monthCommentsChart", "shareChart"].forEach(function (key) {
       if (state[key] && state[key].destroy) {
         state[key].destroy();
         state[key] = null;
@@ -2705,6 +2811,8 @@
     releaseChartWrap("chartWrap");
     releaseChartWrap("totalChartWrap");
     releaseChartWrap("monthChartWrap");
+    releaseChartWrap("monthPostsChartWrap");
+    releaseChartWrap("monthCommentsChartWrap");
     releaseChartWrap("shareChartWrap");
     renderChart({ metric: "today", replay: options && options.replay, rise: options && options.rise });
     renderChart({ metric: "total", replay: options && options.replay, rise: options && options.rise });
@@ -2973,6 +3081,7 @@
     requestBlogCounts();
     syncLiveVisitors();
     renderNotice();
+    renderCloseGap();
     renderMetrics();
     updateCounts();
     var visible = visibleCharacters();

@@ -538,11 +538,14 @@ function tistory_has_next_page($html, $page) {
  * 다음 티스토리 목록 페이지. 0이면 더 받지 않는다. 상한이면 null.
  */
 function tistory_list_continue($page, $hasNext, $seen, $postTotal, $maxPages) {
-    if ($hasNext !== true) return 0;
     if (is_int($postTotal) && $postTotal > 0 && is_int($seen) && $seen >= $postTotal) return 0;
     if (!is_int($page) || !is_int($maxPages) || $page < 1 || $maxPages < 1) return null;
     if ($page >= $maxPages) return null;
-    return $page + 1;
+    if ($hasNext === true) return $page + 1;
+    // 첫 화면에 다음 링크가 없어도 사이트맵 글이 남으면 다음 번호를 한 번 본다.
+    // 그 페이지가 새 글을 주지 않으면 호출한 쪽이 멈춘다.
+    if (is_int($postTotal) && $postTotal > 0 && is_int($seen) && $seen < $postTotal) return $page + 1;
+    return 0;
 }
 
 function tistory_comment_total($counts, $postTotal) {
@@ -574,11 +577,12 @@ function blogger_published_min($now = null) {
     return seoul_day_start($now)->format("Y-m-d\\TH:i:sP");
 }
 
-function blogger_feed_url($name, $kind, $min) {
+function blogger_feed_url($name, $kind, $min, $max = "") {
     $path = $kind === "comments" ? "/feeds/comments/default" : "/feeds/posts/default";
     // max-results=0 은 글을 나열하지 않고 피드가 가진 전체 개수만 받는다.
     $url = "https://" . $name . ".blogspot.com" . $path . "?alt=json&max-results=0";
     if (is_string($min) && $min !== "") $url .= "&published-min=" . rawurlencode($min);
+    if (is_string($max) && $max !== "") $url .= "&published-max=" . rawurlencode($max);
     return $url;
 }
 
@@ -880,22 +884,52 @@ function visitor_urls_from($markdown) {
     return $keys;
 }
 
-/**
- * 그 서울 날짜의 오늘 방문자를 남긴다.
- * 지난 날짜는 고치지 않고, 같은 날에는 더 큰 값만 남긴다.
- * 오늘로부터 400일보다 오래된 칸은 뺀다.
- */
-function visitor_day_apply($data, $blog, $day, $count, $now = null) {
-    if (!is_array($data)) $data = array();
-    if (!is_string($blog) || $blog === "" || !is_int($count) || $count < 0) return $data;
-    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $day)) return $data;
-    $clock = seoul_clock($now);
-    if ($day !== $clock->format("Y-m-d")) return $data;
-    if (!isset($data[$day]) || !is_array($data[$day])) $data[$day] = array();
-    $previous = isset($data[$day][$blog]) ? $data[$day][$blog] : null;
-    if (is_string($previous) && preg_match('/^\d{1,12}$/', $previous)) $previous = (int) $previous;
-    if (is_int($previous) && $previous > $count) $count = $previous;
-    $data[$day][$blog] = $count;
+function visitor_day_number($value) {
+    if (is_int($value)) return $value >= 0 ? $value : null;
+    if (is_string($value) && preg_match('/^\d{1,12}$/', $value)) return (int) $value;
+    return null;
+}
+
+/** 예전 기록은 숫자다. 글·댓글이 있으면 visitors 칸에 방문자가 있다. */
+function visitor_day_visitors($cell) {
+    if (is_array($cell)) return visitor_day_number(isset($cell["visitors"]) ? $cell["visitors"] : null);
+    return visitor_day_number($cell);
+}
+
+function visitor_day_part($cell, $key) {
+    if (!is_array($cell) || !isset($cell[$key])) return null;
+    return visitor_day_number($cell[$key]);
+}
+
+function visitor_day_larger($current, $next) {
+    if (!is_int($next)) return is_int($current) ? $current : null;
+    if (is_int($current) && $current > $next) return $current;
+    return $next;
+}
+
+/** 방문자만 있으면 숫자로 둔다. 글이나 댓글이 있으면 그 칸만 객체에 넣는다. */
+function visitor_day_cell($visitors, $posts, $comments) {
+    if (!is_int($posts) && !is_int($comments)) return is_int($visitors) ? $visitors : null;
+    $cell = array();
+    if (is_int($visitors)) $cell["visitors"] = $visitors;
+    if (is_int($posts)) $cell["posts"] = $posts;
+    if (is_int($comments)) $cell["comments"] = $comments;
+    return $cell;
+}
+
+function visitor_day_clean_cell($value) {
+    if (is_array($value)) {
+        return visitor_day_cell(
+            visitor_day_visitors($value),
+            visitor_day_part($value, "posts"),
+            visitor_day_part($value, "comments")
+        );
+    }
+    $visitors = visitor_day_number($value);
+    return is_int($visitors) ? $visitors : null;
+}
+
+function visitor_day_prune($data, $clock) {
     $cutoff = clone $clock;
     $cutoff->modify("-400 days");
     $cutoffKey = $cutoff->format("Y-m-d");
@@ -906,8 +940,8 @@ function visitor_day_apply($data, $blog, $day, $count, $now = null) {
         $clean = array();
         foreach ($row as $url => $value) {
             if (!is_string($url) || $url === "") continue;
-            if (is_int($value) && $value >= 0) $clean[$url] = $value;
-            elseif (is_string($value) && preg_match('/^\d{1,12}$/', $value)) $clean[$url] = (int) $value;
+            $cell = visitor_day_clean_cell($value);
+            if ($cell !== null) $clean[$url] = $cell;
         }
         if ($clean) $kept[$key] = $clean;
     }
@@ -916,7 +950,42 @@ function visitor_day_apply($data, $blog, $day, $count, $now = null) {
 }
 
 /**
- * 캐릭터의 그날 합. 블로그가 하나도 없거나 하나라도 숫자가 없으면 null.
+ * 그 서울 날짜의 오늘 방문자, 글 수, 댓글 수를 남긴다.
+ * 지난 날짜는 고치지 않고, 같은 날의 각 칸은 더 큰 값만 남긴다.
+ * null 은 못 읽은 칸이라 기존 값을 지우지 않는다. 0은 남긴다.
+ * 오늘로부터 400일보다 오래된 칸은 뺀다.
+ */
+function visitor_day_close_apply($data, $blog, $day, $visitors, $posts, $comments, $now = null) {
+    if (!is_array($data)) $data = array();
+    $visitors = visitor_day_number($visitors);
+    $posts = visitor_day_number($posts);
+    $comments = visitor_day_number($comments);
+    if (!is_string($blog) || $blog === "" || (!is_int($visitors) && !is_int($posts) && !is_int($comments))) return $data;
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', (string) $day)) return $data;
+    $clock = seoul_clock($now);
+    if ($day !== $clock->format("Y-m-d")) return $data;
+    if (!isset($data[$day]) || !is_array($data[$day])) $data[$day] = array();
+    $previous = isset($data[$day][$blog]) ? $data[$day][$blog] : null;
+    $cell = visitor_day_cell(
+        visitor_day_larger(visitor_day_visitors($previous), $visitors),
+        visitor_day_larger(visitor_day_part($previous, "posts"), $posts),
+        visitor_day_larger(visitor_day_part($previous, "comments"), $comments)
+    );
+    if ($cell !== null) $data[$day][$blog] = $cell;
+    return visitor_day_prune($data, $clock);
+}
+
+/**
+ * 그 서울 날짜의 오늘 방문자를 남긴다.
+ * 지난 날짜는 고치지 않고, 같은 날에는 더 큰 값만 남긴다.
+ * 오늘로부터 400일보다 오래된 칸은 뺀다.
+ */
+function visitor_day_apply($data, $blog, $day, $count, $now = null) {
+    return visitor_day_close_apply($data, $blog, $day, $count, null, null, $now);
+}
+
+/**
+ * 캐릭터의 그날 합. 블로그가 하나도 없거나 하나라도 방문자가 없으면 null.
  * 0은 방문자가 없는 날이라 합에 넣는다.
  */
 function visitor_day_total($row, $urls) {
@@ -924,12 +993,104 @@ function visitor_day_total($row, $urls) {
     $sum = 0;
     foreach ($urls as $url) {
         if (!is_string($url) || $url === "" || !array_key_exists($url, $row)) return null;
-        $value = $row[$url];
-        if (is_string($value) && preg_match('/^\d{1,12}$/', $value)) $value = (int) $value;
-        if (!is_int($value) || $value < 0) return null;
+        $value = visitor_day_visitors($row[$url]);
+        if (!is_int($value)) return null;
         $sum += $value;
     }
     return $sum;
+}
+
+/**
+ * 캐릭터의 그날 글 또는 댓글 합. 블로그가 하나도 없거나 그 칸이 하나라도 없으면 null.
+ */
+function visitor_day_field_total($row, $urls, $field) {
+    if ($field !== "posts" && $field !== "comments") return null;
+    if (!is_array($urls) || count($urls) === 0 || !is_array($row)) return null;
+    $sum = 0;
+    foreach ($urls as $url) {
+        if (!is_string($url) || $url === "" || !array_key_exists($url, $row)) return null;
+        $value = visitor_day_part($row[$url], $field);
+        if (!is_int($value)) return null;
+        $sum += $value;
+    }
+    return $sum;
+}
+
+function tistory_counter_chunk($html) {
+    if (!is_string($html) || $html === "") return "";
+    $pos = stripos($html, "box-visit");
+    if ($pos === false && preg_match('/class="[^"]*\bcounter\b[^"]*"/i', $html, $found, PREG_OFFSET_CAPTURE)) {
+        $pos = $found[0][1];
+    }
+    if ($pos === false) return "";
+    return substr($html, $pos, 1800);
+}
+
+/** 티스토리 카운터의 어제 숫자. 오늘·전체와 같은 칸에서만 읽는다. */
+function tistory_yesterday_count($html) {
+    $chunk = tistory_counter_chunk($html);
+    if ($chunk === "") return null;
+    if (preg_match('/Yesterday\s*:\s*([\d,]{1,14})/i', $chunk, $matched)
+        || preg_match('/어제\s*[:：]\s*([\d,]{1,14})/u', $chunk, $matched)
+        || preg_match('/class="[^"]*\byesterday\b[^"]*"[^>]*>\s*([\d,]{1,14})\s*</i', $chunk, $matched)) {
+        return as_count(str_replace(",", "", $matched[1]));
+    }
+    return null;
+}
+
+function blogger_stored_total($data, $blog, $day) {
+    if (!is_array($data) || !is_string($blog) || $blog === "" || !is_string($day)) return null;
+    if (!isset($data[$day]) || !is_array($data[$day]) || !array_key_exists($blog, $data[$day])) return null;
+    $value = $data[$day][$blog];
+    if (is_string($value) && preg_match('/^\d{1,12}$/', $value)) $value = (int) $value;
+    if (!is_int($value) || $value < 0) return null;
+    return $value;
+}
+
+/**
+ * 블로거 어제 방문자는 어제 전체에서 그제 전체를 뺀 값이다.
+ * 둘 중 하나라도 마감이 없으면 null. 오늘 아침의 전체로는 어제를 만들지 않는다.
+ */
+function blogger_yesterday_visitors($data, $blog, $now = null) {
+    if (!is_array($data) || !is_string($blog) || $blog === "") return null;
+    $clock = seoul_clock($now);
+    $yesterday = clone $clock;
+    $yesterday->modify("-1 day");
+    $before = clone $clock;
+    $before->modify("-2 day");
+    $later = blogger_stored_total($data, $blog, $yesterday->format("Y-m-d"));
+    $earlier = blogger_stored_total($data, $blog, $before->format("Y-m-d"));
+    if (!is_int($later) || !is_int($earlier) || $later < $earlier) return null;
+    return $later - $earlier;
+}
+
+/**
+ * 어제 칸만 비어 있는 방문자·글·댓글을 채운다.
+ * 이미 숫자가 있으면 그대로 둔다. 오늘과 그제 이전은 고치지 않는다.
+ */
+function visitor_day_fill_apply($data, $blog, $day, $visitors, $posts, $comments, $now = null) {
+    if (!is_array($data)) $data = array();
+    $visitors = visitor_day_number($visitors);
+    $posts = visitor_day_number($posts);
+    $comments = visitor_day_number($comments);
+    if (!is_string($blog) || $blog === "" || (!is_int($visitors) && !is_int($posts) && !is_int($comments))) return $data;
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', (string) $day)) return $data;
+    $clock = seoul_clock($now);
+    $yesterday = clone $clock;
+    $yesterday->modify("-1 day");
+    if ($day !== $yesterday->format("Y-m-d")) return $data;
+    if (!isset($data[$day]) || !is_array($data[$day])) $data[$day] = array();
+    $previous = isset($data[$day][$blog]) ? $data[$day][$blog] : null;
+    $keptVisitors = visitor_day_visitors($previous);
+    $keptPosts = visitor_day_part($previous, "posts");
+    $keptComments = visitor_day_part($previous, "comments");
+    $cell = visitor_day_cell(
+        is_int($keptVisitors) ? $keptVisitors : $visitors,
+        is_int($keptPosts) ? $keptPosts : $posts,
+        is_int($keptComments) ? $keptComments : $comments
+    );
+    if ($cell !== null) $data[$day][$blog] = $cell;
+    return visitor_day_prune($data, $clock);
 }
 
 function blogger_apply_character_blogs($sets, $bySuffix) {
