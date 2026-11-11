@@ -33,7 +33,6 @@
     counts: "botdash_counts",
     countsDay: "botdash_counts_day",
     viewDay: "botdash_view_day",
-    latestOpen: "botdash_latest_open",
     latestSize: "botdash_latest_size",
     latestSizeMobile: "botdash_latest_size_m"
   };
@@ -4459,10 +4458,6 @@
         latest.closeTimer = setTimeout(finishLatestMotion, 300);
       }
     }
-    if (persist) {
-      try { localStorage.setItem(STORAGE.latestOpen, open ? "1" : "0"); } catch (error) {}
-      saveAccountPrefs();
-    }
     if (!open && section.contains(document.activeElement) && document.activeElement !== toggle) toggle.focus();
     if (!fadeClose) {
       syncLatestTicker();
@@ -5221,9 +5216,7 @@
         section.classList.remove("is-list-in");
       });
     }
-    var savedOpen = true;
-    try { savedOpen = localStorage.getItem(STORAGE.latestOpen) !== "0"; } catch (error) {}
-    latestSetOpen(savedOpen, false);
+    latestSetOpen(false, false);
     var toggle = document.getElementById("latestToggle");
     if (toggle) {
       toggle.addEventListener("click", function () {
@@ -5304,9 +5297,7 @@
   }
 
   function accountPrefsPayload() {
-    var open = storageGet(STORAGE.latestOpen);
     return {
-      latestOpen: open === "0" ? 0 : 1,
       latestSize: latestStoredSize(false),
       latestSizeMobile: latestStoredSize(true)
     };
@@ -5337,12 +5328,6 @@
     else if (storageGet(STORAGE.latestSize)) dirty = true;
     if (sizeMobile !== null) storageSet(STORAGE.latestSizeMobile, String(sizeMobile));
     else if (storageGet(STORAGE.latestSizeMobile)) dirty = true;
-    if (data.latestOpen === 0 || data.latestOpen === 1) {
-      storageSet(STORAGE.latestOpen, data.latestOpen ? "1" : "0");
-    } else {
-      var savedOpen = storageGet(STORAGE.latestOpen);
-      if (savedOpen === "0" || savedOpen === "1") dirty = true;
-    }
     var desktopSize = document.getElementById("latestSizeDesktop");
     var mobileSize = document.getElementById("latestSizeMobile");
     if (desktopSize) desktopSize.value = String(latestStoredSize(false));

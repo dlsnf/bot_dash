@@ -16,10 +16,9 @@
       var latestMobile = window.matchMedia("(max-width: 767px)").matches;
       var latestWide = window.matchMedia("(min-width: 768px)").matches;
       var latestBoot = latestMobile ? 3 : 5;
+      document.documentElement.setAttribute("data-latest", "closed");
       try {
-        if (localStorage.getItem("botdash_latest_open") === "0") {
-          document.documentElement.setAttribute("data-latest", "closed");
-        }
+        localStorage.removeItem("botdash_latest_open");
         var latestSaved = parseInt(localStorage.getItem(latestMobile ? "botdash_latest_size_m" : "botdash_latest_size"), 10);
         if (latestSaved >= 1 && latestSaved <= 10) latestBoot = latestSaved;
       } catch (e) {}
@@ -207,7 +206,7 @@
       <p id="statErrors" class="metric-sub tab-errors" hidden></p>
       <p id="resultInfo" class="sr-only" aria-live="polite"></p>
       <section id="cards" role="tabpanel" aria-labelledby="tabCards" aria-label="캐릭터">
-        <section id="latestPosts" class="latest is-loading" aria-busy="true" aria-label="최근 게시물">
+        <section id="latestPosts" class="latest is-loading is-collapsed" aria-busy="true" aria-label="최근 게시물">
           <div class="latest-head">
             <h2 id="latestHeading"><span class="skeleton latest-title-skel" aria-hidden="true"></span><span class="latest-title-full">최근 게시물</span><span class="latest-title-short">최근</span></h2>
             <span class="latest-rule" aria-hidden="true"></span>
@@ -226,7 +225,7 @@
               <span id="latestPage" class="latest-page-label" aria-hidden="true">1 / 1</span>
               <button type="button" id="latestNext" class="latest-arrow" aria-label="다음 게시물"><i class="fa-solid fa-chevron-right" aria-hidden="true"></i></button>
             </div>
-            <button type="button" id="latestToggle" class="latest-toggle" aria-expanded="true" aria-controls="latestBody" aria-label="최근 게시물 접기">
+            <button type="button" id="latestToggle" class="latest-toggle" aria-expanded="false" aria-controls="latestBody" aria-label="최근 게시물 펼치기">
               <svg class="latest-chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 6 L8 10 L12 6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg>
             </button>
           </div>
@@ -343,6 +342,6 @@
   <script src="js/reel.js"></script>
   <script src="js/chart.js?v=31"></script>
   <script src="js/login.js?v=2"></script>
-  <script src="js/app.js?v=69"></script>
+  <script src="js/app.js?v=70"></script>
 </body>
 </html>
