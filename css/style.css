@@ -1464,6 +1464,51 @@ body[data-page="login"].auth-ready .login-shell { visibility: visible; }
   .top-actions { justify-content: flex-end; }
 }
 
+@media (min-width: 768px) and (max-width: 899px) {
+  .brand-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: 12px;
+  }
+  .boot-top {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 12px;
+  }
+  .brand { min-width: 0; }
+  .brand h1,
+  .metric-label { white-space: nowrap; }
+  .metrics,
+  .action-buttons { flex-wrap: nowrap; }
+  .metric { min-width: 0; }
+  .top-actions { justify-content: flex-end; }
+}
+
+@media (max-width: 899px) {
+  .top-actions .btn-refresh .btn-label,
+  .top-actions .btn-toggle .toggle-label,
+  .top-actions .btn-toggle .toggle-chevron {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+  .top-actions .btn-refresh,
+  .top-actions .btn-toggle {
+    justify-content: center;
+    width: 44px;
+    min-width: 44px;
+    padding: 0;
+  }
+}
+
 @media (min-width: 768px) {
   .card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
   .card-body { padding: 22px 22px 18px; gap: 22px; }
@@ -1525,7 +1570,11 @@ body[data-page="login"].auth-ready .login-shell { visibility: visible; }
   .metric-label { font-size: 11px; }
   .metric strong { font-size: 18px; }
   .brand h1 { font-size: 18px; }
-  .btn-logout, .btn-toggle, .btn-refresh { min-height: 40px; padding: 0 10px; }
+  .btn-logout, .btn-toggle, .btn-refresh { min-height: 40px; }
+  .top-actions .btn-refresh,
+  .top-actions .btn-toggle,
+  .top-actions .btn-logout { width: 40px; min-width: 40px; padding: 0; }
+  .top-actions .btn-refresh .btn-label,
   .top-actions .btn-toggle .toggle-label,
   .top-actions .btn-toggle .toggle-chevron,
   .top-actions .btn-logout .btn-label {
@@ -1540,9 +1589,9 @@ body[data-page="login"].auth-ready .login-shell { visibility: visible; }
     border: 0;
   }
   .top-actions .btn-toggle,
+  .top-actions .btn-refresh,
   .top-actions .btn-logout {
     justify-content: center;
-    min-width: 40px;
   }
   .card-grid { grid-template-columns: 1fr; }
   .view-tabs button { padding: 0 12px; }
