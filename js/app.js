@@ -148,7 +148,13 @@
     var page = document.body.dataset.page;
     if (page !== "dashboard" && page !== "detail") return;
     if (document.body.dataset.pullRefresh) return;
-    if (!window.matchMedia("(hover: none) and (pointer: coarse)").matches) return;
+    // 전화기는 hover가 없고 포인터가 굵다. iPadOS Safari와 데스크탑 모드 브라우저는
+    // 마우스가 있는 것처럼 보고해서 이 조합이 거짓이 된다. 그때 당기기가 붙지 않으면
+    // 맨 위에서 아래로 쓸면 페이지가 손가락을 따라 내려간다.
+    var coarse = window.matchMedia("(hover: none) and (pointer: coarse)").matches;
+    var touchDesktop = navigator.maxTouchPoints > 0 && window.matchMedia("(hover: hover) and (pointer: fine)").matches;
+    if (!coarse && !touchDesktop) return;
+    document.documentElement.classList.add("can-pull-refresh");
     document.body.dataset.pullRefresh = "1";
     var icon = h("i", { class: "fa-solid fa-rotate-right", "aria-hidden": "true" });
     var pill = h("p", { class: "pull-refresh-pill" }, icon);
@@ -169,7 +175,22 @@
     var view = { distance: 0, ready: false, angle: 0, opacity: 0, snap: false };
 
     function scrolledTop() {
-      return (window.scrollY || document.documentElement.scrollTop || 0) <= 0;
+      var root = document.scrollingElement || document.documentElement;
+      var y = window.scrollY || 0;
+      var top = root && root.scrollTop || 0;
+      // 주소창이 보이는 Chromium은 맨 위인데 scrollY가 1인 경우가 있다.
+      return Math.max(y, top) <= 1;
+    }
+
+    function verticalScroller(node) {
+      while (node && node !== document.body && node !== document.documentElement) {
+        if (node.scrollHeight > node.clientHeight + 1) {
+          var oy = window.getComputedStyle(node).overflowY;
+          if (oy === "auto" || oy === "scroll" || oy === "overlay") return node;
+        }
+        node = node.parentElement;
+      }
+      return null;
     }
 
     function blockedTarget() {
@@ -279,6 +300,8 @@
     document.addEventListener("touchstart", function (event) {
       if (fired || event.touches.length !== 1) return;
       if (!scrolledTop() || blockedTarget()) return;
+      var scroller = verticalScroller(event.target);
+      if (scroller && scroller.scrollTop > 1) return;
       var touch = event.touches[0];
       startY = touch.clientY;
       startX = touch.clientX;
@@ -301,12 +324,18 @@
         tracking = false;
         return;
       }
-      if (!owned && raw <= 0 && dy > 0 && Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 12) {
+      if (!owned && dy > 0 && Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 12) {
         tracking = false;
         return;
       }
+      // 아래로 당기는 첫 이동부터 기본 동작을 막는다.
+      // 8px 뒤에 막으면 Chromium은 그 전에 제스처를 스크롤로 확정하고,
+      // 이후 touchmove는 cancelable이 아니라 preventDefault가 무시된다.
+      // WebKit은 늦게 막아도 당기기를 따라와서 브라우저마다 갈린다.
+      var pullingDown = dy > 0 && Math.abs(dy) >= Math.abs(dx);
+      if (pullingDown && event.cancelable) event.preventDefault();
       if (!owned && dy < 8) return;
-      if (event.cancelable) event.preventDefault();
+      if (!pullingDown && event.cancelable) event.preventDefault();
       owned = true;
       followFinger(dy);
     }, { passive: false });

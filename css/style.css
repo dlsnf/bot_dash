@@ -369,9 +369,14 @@ button, input, select { font: inherit; color: inherit; }
 .btn-refresh { position: relative; }
 
 @media (hover: none) and (pointer: coarse) {
+  /* contain이 아니라 none이다. contain은 스크롤 연쇄만 막고 끝에서 튕기는 효과는 남겨 WebKit이 페이지를 손가락과 함께 내린다. */
+  html, body { overscroll-behavior-y: none; }
   html { touch-action: manipulation; }
   #topRefreshBtn { display: none; }
 }
+
+html.can-pull-refresh,
+html.can-pull-refresh body { overscroll-behavior-y: none; }
 
 .btn-toggle, .btn-logout { position: relative; }
 
